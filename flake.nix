@@ -1,5 +1,5 @@
 {
-  description = "Complete native Linux userspace driver and RGB music visualizer for Ajazz AK820 Max";
+  description = "Complete native Linux userspace driver, GUI studio, and RGB music visualizer for Ajazz AK820 Max";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -19,9 +19,10 @@
         };
 
         apps = rec {
+          gui = flake-utils.lib.mkApp { drv = self.packages.${system}.default; name = "ak820-gui"; };
           ak820ctl = flake-utils.lib.mkApp { drv = self.packages.${system}.default; name = "ak820ctl"; };
           ak820d = flake-utils.lib.mkApp { drv = self.packages.${system}.default; name = "ak820d"; };
-          default = ak820ctl;
+          default = gui;
         };
 
         devShells.default = pkgs.mkShell {
@@ -31,21 +32,42 @@
             rustfmt
             clippy
             pkg-config
+            makeWrapper
           ];
 
           buildInputs = with pkgs; [
             alsa-lib
             systemd
             libudev-zero
+            wayland
+            libxkbcommon
+            libGL
+            vulkan-loader
+            libx11
+            libxcursor
+            libxrandr
+            libxi
           ];
 
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [
+            wayland
+            libxkbcommon
+            libGL
+            vulkan-loader
+            libx11
+            libxcursor
+            libxrandr
+            libxi
+            alsa-lib
+          ]);
+
           shellHook = ''
-            echo "====================================================="
-            echo " Ajazz AK820 Max Native Linux Development Environment "
-            echo "====================================================="
-            echo "Run 'cargo test' to run the test suite."
+            echo "=========================================================="
+            echo " Ajazz AK820 Max Native Linux Studio (v1.1.0) Environment "
+            echo "=========================================================="
+            echo "Run 'cargo run --bin ak820-gui' to launch the GUI."
             echo "Run 'cargo run --bin ak820ctl -- status' to probe the keyboard."
-            echo "Run 'cargo run --bin ak820ctl -- music' to start music sync."
+            echo "Run 'cargo test' to execute all unit and integration tests."
           '';
         };
       }

@@ -5,16 +5,17 @@ members = [
     "audio",
     "daemon",
     "cli",
+    "gui",
     "tests",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "1.1.0"
 edition = "2021"
-authors = ["Antigravity Systems Team", "Ajazz Linux Community"]
+authors = ["Aayam Pokhrel <pokhrelaayam1010@gmail.com>", "Ajazz Linux Community"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/ajazz-linux/ajazz-ak820-max"
+repository = "https://github.com/AayamPokhrel/AJAZZ_AK820MAX_LINUX_DRIVER"
 
 [workspace.dependencies]
 anyhow = "1.0"

@@ -1,0 +1,60 @@
+# Maintainer: Aayam Pokhrel <pokhrelaayam1010@gmail.com>
+pkgname=ajazz-ak820-max
+pkgver=1.1.0
+pkgrel=1
+pkgdesc="Native Linux driver, GUI studio, and RGB music visualizer for Ajazz AK820 Max mechanical keyboards"
+arch=('x86_64' 'aarch64')
+url="https://github.com/AayamPokhrel/AJAZZ_AK820MAX_LINUX_DRIVER"
+license=('MIT' 'Apache-2.0')
+depends=(
+    'alsa-lib'
+    'systemd-libs'
+    'libx11'
+    'libxcursor'
+    'libxrandr'
+    'libxi'
+    'libxkbcommon'
+    'wayland'
+    'vulkan-icd-loader'
+)
+makedepends=('cargo' 'pkg-config')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$srcdir/$pkgname-$pkgver"
+    cargo build --release --workspace
+}
+
+check() {
+    cd "$srcdir/$pkgname-$pkgver"
+    cargo test --workspace
+}
+
+package() {
+    cd "$srcdir/$pkgname-$pkgver"
+
+    # Install binaries
+    install -Dm755 target/release/ak820-gui "$pkgdir/usr/bin/ak820-gui"
+    install -Dm755 target/release/ak820ctl "$pkgdir/usr/bin/ak820ctl"
+    install -Dm755 target/release/ak820d "$pkgdir/usr/bin/ak820d"
+
+    # Install udev rules
+    install -Dm644 nix/70-ajazz-ak820.rules "$pkgdir/usr/lib/udev/rules.d/70-ajazz-ak820.rules"
+
+    # Install systemd user service
+    install -Dm644 nix/ak820d.service "$pkgdir/usr/lib/systemd/user/ak820d.service"
+
+    # Install desktop entry
+    install -Dm644 assets/ajazz-ak820-max.desktop "$pkgdir/usr/share/applications/ajazz-ak820-max.desktop"
+
+    # Install icons
+    install -Dm644 assets/icons/ajazz-ak820-max.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/ajazz-ak820-max.svg"
+    for size in 48x48 64x64 128x128 256x256 512x512; do
+        install -Dm644 "assets/icons/hicolor/$size/apps/ajazz-ak820-max.png" \
+            "$pkgdir/usr/share/icons/hicolor/$size/apps/ajazz-ak820-max.png"
+    done
+
+    # Install license
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

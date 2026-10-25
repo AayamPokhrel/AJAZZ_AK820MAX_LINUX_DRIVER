@@ -1,0 +1,22 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Ajazz AK820 Max RGB Studio
+GenericName=Keyboard RGB & Hardware Controller
+Comment=Manage RGB lighting, music visualizer, and hardware settings for Ajazz AK820 Max
+Exec=ak820-gui
+Icon=ajazz-ak820-max
+Terminal=false
+StartupNotify=true
+StartupWMClass=ak820-gui
+Categories=Settings;HardwareSettings;Utility;AudioVideo;
+Keywords=ajazz;ak820;keyboard;rgb;lighting;audio;visualizer;
+Actions=LaunchMusic;LaunchEffects;
+
+[Desktop Action LaunchMusic]
+Name=Open Music Visualizer
+Exec=ak820-gui --tab music
+
+[Desktop Action LaunchEffects]
+Name=Open Effects Studio
+Exec=ak820-gui --tab effects
