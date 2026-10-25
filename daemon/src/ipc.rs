@@ -1,0 +1,57 @@
+use ajazz_hid::DeviceStatus;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+pub fn default_socket_path() -> PathBuf {
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        let p = PathBuf::from(runtime_dir).join("ajazz-ak820.sock");
+        if let Some(parent) = p.parent() {
+            if parent.exists() {
+                return p;
+            }
+        }
+    }
+    let uid = unsafe { libc::getuid() };
+    PathBuf::from(format!("/tmp/ajazz-ak820-{}.sock", uid))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload")]
+pub enum DaemonRequest {
+    Ping,
+    GetStatus,
+    SetEffect {
+        mode: String,
+        brightness: Option<u8>,
+        speed: Option<u8>,
+        direction: Option<String>,
+        color: Option<String>,
+    },
+    SetStatic {
+        color: String,
+    },
+    StartMusic {
+        style: String,
+        color: Option<String>,
+        sensitivity: Option<f32>,
+        fps: Option<u32>,
+    },
+    StopMusic,
+    SetCustomKey {
+        key: String,
+        color: String,
+    },
+    SetSleep {
+        minutes: u8,
+    },
+    Shutdown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", content = "data")]
+pub enum DaemonResponse {
+    Ok { message: String },
+    Pong,
+    Status(DeviceStatus),
+    Error { message: String },
+}

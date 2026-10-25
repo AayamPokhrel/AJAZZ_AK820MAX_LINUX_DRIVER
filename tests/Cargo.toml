@@ -1,0 +1,23 @@
+[package]
+name = "ajazz-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dev-dependencies]
+ajazz-hid = { path = "../hid" }
+ajazz-rgb = { path = "../rgb" }
+ajazz-audio = { path = "../audio" }
+tokio.workspace = true
+
+[[test]]
+name = "protocol_tests"
+path = "protocol_tests.rs"
+
+[[test]]
+name = "audio_fft_tests"
+path = "audio_fft_tests.rs"
+
+[[test]]
+name = "layout_tests"
+path = "layout_tests.rs"

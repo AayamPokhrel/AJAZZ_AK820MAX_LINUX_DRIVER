@@ -1,0 +1,14 @@
+# Ajazz AK820 Max / AK820 Pro Mechanical Keyboards
+# Grants logged-in desktop users access to configuration interfaces without root privileges.
+
+# BY-COMBO / SinoWealth Wired Mode (258a:010c)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="258a", ATTRS{idProduct}=="010c", MODE="0660", GROUP="input", TAG+="uaccess"
+
+# Compx 2.4GHz Wireless USB Receiver (3554:fa09)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3554", ATTRS{idProduct}=="fa09", MODE="0660", GROUP="input", TAG+="uaccess"
+
+# Shinetek / EVision Wired Mode (1a2c:a036)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1a2c", ATTRS{idProduct}=="a036", MODE="0660", GROUP="input", TAG+="uaccess"
+
+# Shinetek 2.4GHz Wireless USB Receiver (1a2c:8fff)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1a2c", ATTRS{idProduct}=="8fff", MODE="0660", GROUP="input", TAG+="uaccess"

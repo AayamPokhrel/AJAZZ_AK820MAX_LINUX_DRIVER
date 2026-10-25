@@ -1,0 +1,14 @@
+[Unit]
+Description=Ajazz AK820 Max Userspace RGB Daemon & Music Visualizer
+Documentation=https://github.com/ajazz-linux/ajazz-ak820-max
+After=pipewire.service pulseaudio.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.nix-profile/bin/ak820d
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=default.target

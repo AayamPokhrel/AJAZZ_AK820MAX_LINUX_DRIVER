@@ -1,0 +1,18 @@
+[package]
+name = "ajazz-hid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ajazz-rgb = { path = "../rgb" }
+hidapi.workspace = true
+rusb.workspace = true
+nix.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
