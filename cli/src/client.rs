@@ -1,4 +1,4 @@
-use ajazz_hid::DeviceStatus;
+use ajazz_hid::{DeviceStatus, DiscoveredDevice};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -22,6 +22,11 @@ pub fn default_socket_path() -> PathBuf {
 pub enum DaemonRequest {
     Ping,
     GetStatus,
+    GetDevices,
+    SetMode {
+        mode: String,
+        device: Option<String>,
+    },
     SetEffect {
         mode: String,
         brightness: Option<u8>,
@@ -55,31 +60,23 @@ pub enum DaemonResponse {
     Ok { message: String },
     Pong,
     Status(DeviceStatus),
+    Devices(Vec<DiscoveredDevice>),
     Error { message: String },
 }
 
-pub async fn try_daemon_request(req: DaemonRequest) -> Result<DaemonResponse, String> {
-    let socket_path = default_socket_path();
-    if !socket_path.exists() {
-        return Err("Daemon socket does not exist (daemon not running)".to_string());
-    }
-
-    let stream = match UnixStream::connect(&socket_path).await {
-        Ok(s) => s,
-        Err(e) => return Err(format!("Could not connect to daemon: {}", e)),
-    };
-
+pub async fn try_daemon_request(req: DaemonRequest) -> anyhow::Result<DaemonResponse> {
+    let path = default_socket_path();
+    let stream = UnixStream::connect(&path).await?;
     let (reader, mut writer) = stream.into_split();
-    let mut data = serde_json::to_vec(&req).map_err(|e| e.to_string())?;
-    data.push(b'\n');
 
-    writer.write_all(&data).await.map_err(|e| e.to_string())?;
+    let mut line = serde_json::to_string(&req)?;
+    line.push('\n');
+    writer.write_all(line.as_bytes()).await?;
 
-    let mut lines = BufReader::new(reader).lines();
-    if let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
-        let resp: DaemonResponse = serde_json::from_str(&line).map_err(|e| e.to_string())?;
-        Ok(resp)
-    } else {
-        Err("Daemon closed connection without response".to_string())
-    }
+    let mut reader = BufReader::new(reader);
+    let mut resp_line = String::new();
+    reader.read_line(&mut resp_line).await?;
+
+    let resp: DaemonResponse = serde_json::from_str(&resp_line)?;
+    Ok(resp)
 }

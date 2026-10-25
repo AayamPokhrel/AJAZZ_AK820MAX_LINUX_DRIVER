@@ -1,4 +1,4 @@
-use ajazz_hid::DeviceStatus;
+use ajazz_hid::{DeviceStatus, DiscoveredDevice};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -20,6 +20,11 @@ pub fn default_socket_path() -> PathBuf {
 pub enum DaemonRequest {
     Ping,
     GetStatus,
+    GetDevices,
+    SetMode {
+        mode: String,
+        device: Option<String>,
+    },
     SetEffect {
         mode: String,
         brightness: Option<u8>,
@@ -53,5 +58,6 @@ pub enum DaemonResponse {
     Ok { message: String },
     Pong,
     Status(DeviceStatus),
+    Devices(Vec<DiscoveredDevice>),
     Error { message: String },
 }

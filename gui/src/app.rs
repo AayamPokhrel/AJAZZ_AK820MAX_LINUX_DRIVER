@@ -277,7 +277,7 @@ impl eframe::App for Ak820App {
                                             .rounding(Rounding::same(8.0));
 
                                             if ui.add(apply_all_btn).clicked() {
-                                                match self.coordinator.upload_custom_matrix(&self.canvas_state.custom_colors) {
+                                                match self.coordinator.upload_custom_matrix(&self.canvas_state.custom_colors, 5) {
                                                     Ok(_) => {
                                                         self.status_message = Some((
                                                             "Successfully uploaded custom RGB canvas to keyboard!".to_string(),

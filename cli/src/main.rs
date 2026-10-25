@@ -1,7 +1,7 @@
 mod client;
 
 use ajazz_audio::{AudioCapture, FFT_SIZE, MusicRenderer, SpectrumAnalyzer, VisualizerStyle};
-use ajazz_hid::{enumerate_devices, AjazzDevice, PowerState};
+use ajazz_hid::{enumerate_devices, AjazzDevice, HardwareConnection, PowerState};
 use ajazz_rgb::color::{Color, PaletteColor};
 use ajazz_rgb::effects::{Direction, EffectMode, EffectSettings};
 use ajazz_rgb::layout::{find_key_by_name, TOTAL_LEDS};
@@ -16,9 +16,25 @@ use std::time::{Duration, Instant};
     name = "ak820ctl",
     author = "Antigravity Systems Team",
     version = "1.1.0",
-    about = "Native Linux CLI control utility for Ajazz AK820 Max mechanical keyboards"
+    about = "Native Linux CLI control utility for Ajazz AK820 Max mechanical keyboards (Tri-Mode: Wired, 2.4G, Bluetooth)"
 )]
 struct Cli {
+    #[arg(
+        short,
+        long,
+        global = true,
+        help = "Preferred connection mode: wired, 2.4g, bluetooth, auto"
+    )]
+    mode: Option<String>,
+
+    #[arg(
+        short,
+        long,
+        global = true,
+        help = "Direct hidraw devnode path (e.g. /dev/hidraw1)"
+    )]
+    device: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -28,8 +44,16 @@ enum Commands {
     #[command(about = "Query and display keyboard status (battery, charging, connection)")]
     Status,
 
-    #[command(about = "List all detected Ajazz keyboards and USB interfaces")]
+    #[command(about = "List all detected Ajazz keyboards, dongles, and interfaces")]
     Devices,
+
+    #[command(about = "Switch or select active connection mode (wired, 2.4g, bluetooth, auto)")]
+    Mode {
+        #[arg(help = "Connection mode: wired, 2.4g, bluetooth, auto")]
+        mode: String,
+        #[arg(long, help = "Optional specific devnode (e.g. /dev/hidraw1)")]
+        device: Option<String>,
+    },
 
     #[command(about = "Set hardware lighting effect (e.g. rainbow, breathing, wave, static)")]
     Effect {
@@ -39,7 +63,7 @@ enum Commands {
         brightness: Option<u8>,
         #[arg(short, long, help = "Speed level (1..=5, default 4)")]
         speed: Option<u8>,
-        #[arg(short, long, help = "Direction (left or right)")]
+        #[arg(long, help = "Direction (left or right)")]
         direction: Option<String>,
         #[arg(short, long, help = "Base color (hex or name: red, green, blue, rainbow, etc.)")]
         color: Option<String>,
@@ -59,7 +83,7 @@ enum Commands {
         color: Option<String>,
         #[arg(short, long, default_value_t = 30, help = "Target FPS (10..=60)")]
         fps: u32,
-        #[arg(short, long, default_value_t = 1.0, help = "Microphone/audio sensitivity factor (0.1..=5.0)")]
+        #[arg(long, default_value_t = 1.0, help = "Microphone/audio sensitivity factor (0.1..=5.0)")]
         sensitivity: f32,
         #[arg(long, help = "Send to background daemon instead of running in foreground")]
         daemon: bool,
@@ -89,6 +113,18 @@ enum Commands {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let pref_mode = cli.mode.as_deref().and_then(HardwareConnection::from_str_case);
+    let dev_override = cli.device.as_deref();
+
+    // If explicit mode or device was provided, notify daemon if available
+    if cli.mode.is_some() || cli.device.is_some() {
+        let mode_str = cli.mode.clone().unwrap_or_else(|| "auto".to_string());
+        let _ = try_daemon_request(DaemonRequest::SetMode {
+            mode: mode_str,
+            device: cli.device.clone(),
+        })
+        .await;
+    }
 
     match cli.command {
         Commands::Status => {
@@ -98,8 +134,8 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            // Direct device query
-            let dev = match AjazzDevice::open_auto() {
+            // Direct device query with preference
+            let dev = match AjazzDevice::open_with_preference(pref_mode, dev_override) {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("{} {}", "Error opening device:".red().bold(), e);
@@ -109,7 +145,7 @@ async fn main() -> anyhow::Result<()> {
 
             let info = dev.info().clone();
             match dev.status() {
-                Ok(st) => print_status(&st, &format!("Direct ({})", info.device_name)),
+                Ok(st) => print_status(&st, &format!("Direct ({}, {:?})", info.device_name, info.connection_mode)),
                 Err(e) => eprintln!("{} {}", "Failed to query device status:".red().bold(), e),
             }
         }
@@ -121,18 +157,51 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", "No Ajazz devices found. Check USB connection or udev rules.".yellow());
             } else {
                 for (i, d) in devs.iter().enumerate() {
-                    let mode_str = if d.is_wired { "Wired USB".green() } else { "2.4GHz Wireless".magenta() };
+                    let mode_badge = match d.connection_mode {
+                        HardwareConnection::Wired => "[USB Wired]".green().bold(),
+                        HardwareConnection::Wireless24G => "[2.4GHz Wireless]".magenta().bold(),
+                        HardwareConnection::Bluetooth => "[Bluetooth]".blue().bold(),
+                        HardwareConnection::Unknown => "[Unknown]".yellow().bold(),
+                    };
+
                     println!(
-                        "[{}] {} ({:04X}:{:04X})\n    Devnode: {}\n    Mode: {}\n    Protocol: {:?}\n    Usage Page: 0x{:04X?}, Usage: 0x{:04X?}",
+                        "[{}] {} {}\n    Devnode: {}\n    Hardware ID: {:04X}:{:04X} (Bus {})\n    Interface: {:?}\n    Protocol: {:?}\n    Usage Pages: 0x{:04X?}",
                         i + 1,
                         d.device_name.bold(),
+                        mode_badge,
+                        d.devnode.cyan(),
                         d.vendor_id,
                         d.product_id,
-                        d.devnode.cyan(),
-                        mode_str,
+                        d.bus_type,
+                        d.interface,
                         d.protocol,
-                        d.usage_page.unwrap_or(0),
-                        d.usage.unwrap_or(0)
+                        d.usage_pages
+                    );
+                }
+            }
+        }
+
+        Commands::Mode { mode, device } => {
+            let req = DaemonRequest::SetMode {
+                mode: mode.clone(),
+                device: device.clone(),
+            };
+            match try_daemon_request(req).await {
+                Ok(DaemonResponse::Ok { message }) => {
+                    println!("{} {}", "Success:".green().bold(), message);
+                }
+                Ok(DaemonResponse::Error { message }) => {
+                    eprintln!("{} {}", "Daemon Error:".red().bold(), message);
+                }
+                _ => {
+                    let parsed = HardwareConnection::from_str_case(&mode);
+                    let dev = AjazzDevice::open_with_preference(parsed, device.as_deref())?;
+                    println!(
+                        "{} Connected directly to {} on {} (mode: {:?})",
+                        "Success:".green().bold(),
+                        dev.info().device_name,
+                        dev.info().devnode,
+                        dev.connection_mode()
                     );
                 }
             }
@@ -145,22 +214,28 @@ async fn main() -> anyhow::Result<()> {
             direction,
             color,
         } => {
-            // Try via daemon first
-            if let Ok(resp) = try_daemon_request(DaemonRequest::SetEffect {
-                mode: mode.clone(),
-                brightness,
-                speed,
-                direction: direction.clone(),
-                color: color.clone(),
-            })
-            .await
-            {
-                match resp {
-                    DaemonResponse::Ok { message } => println!("{} {}", "Success:".green().bold(), message),
-                    DaemonResponse::Error { message } => eprintln!("{} {}", "Daemon error:".red().bold(), message),
-                    _ => {}
+            // Try via daemon first if no explicit devnode was requested
+            if dev_override.is_none() {
+                if let Ok(resp) = try_daemon_request(DaemonRequest::SetEffect {
+                    mode: mode.clone(),
+                    brightness,
+                    speed,
+                    direction: direction.clone(),
+                    color: color.clone(),
+                })
+                .await
+                {
+                    match resp {
+                        DaemonResponse::Ok { message } => {
+                            println!("{} {}", "Success:".green().bold(), message);
+                            return Ok(());
+                        }
+                        DaemonResponse::Error { message } => {
+                            eprintln!("{} {}", "Daemon error:".red().bold(), message);
+                        }
+                        _ => {}
+                    }
                 }
-                return Ok(());
             }
 
             // Direct fallback
@@ -191,19 +266,31 @@ async fn main() -> anyhow::Result<()> {
                 custom_color: custom_c,
             };
 
-            let dev = AjazzDevice::open_auto()?;
+            let dev = AjazzDevice::open_with_preference(pref_mode, dev_override)?;
             dev.set_lighting(&settings)?;
-            println!("{} Applied effect '{}'", "Success:".green().bold(), effect_mode.name());
+            println!(
+                "{} Applied effect '{}' on {} ({:?})",
+                "Success:".green().bold(),
+                effect_mode.name(),
+                dev.info().devnode,
+                dev.connection_mode()
+            );
         }
 
         Commands::Static { color } => {
-            if let Ok(resp) = try_daemon_request(DaemonRequest::SetStatic { color: color.clone() }).await {
-                match resp {
-                    DaemonResponse::Ok { message } => println!("{} {}", "Success:".green().bold(), message),
-                    DaemonResponse::Error { message } => eprintln!("{} {}", "Daemon error:".red().bold(), message),
-                    _ => {}
+            if dev_override.is_none() {
+                if let Ok(resp) = try_daemon_request(DaemonRequest::SetStatic { color: color.clone() }).await {
+                    match resp {
+                        DaemonResponse::Ok { message } => {
+                            println!("{} {}", "Success:".green().bold(), message);
+                            return Ok(());
+                        }
+                        DaemonResponse::Error { message } => {
+                            eprintln!("{} {}", "Daemon error:".red().bold(), message);
+                        }
+                        _ => {}
+                    }
                 }
-                return Ok(());
             }
 
             let c = Color::from_str(&color)?;
@@ -216,9 +303,15 @@ async fn main() -> anyhow::Result<()> {
                 custom_color: Some(c),
             };
 
-            let dev = AjazzDevice::open_auto()?;
+            let dev = AjazzDevice::open_with_preference(pref_mode, dev_override)?;
             dev.set_lighting(&settings)?;
-            println!("{} Set keyboard static color to {}", "Success:".green().bold(), c);
+            println!(
+                "{} Set static color to {} on {} ({:?})",
+                "Success:".green().bold(),
+                c,
+                dev.info().devnode,
+                dev.connection_mode()
+            );
         }
 
         Commands::Music {
@@ -238,163 +331,140 @@ async fn main() -> anyhow::Result<()> {
                 match try_daemon_request(req).await {
                     Ok(DaemonResponse::Ok { message }) => println!("{} {}", "Success:".green().bold(), message),
                     Ok(DaemonResponse::Error { message }) => eprintln!("{} {}", "Error:".red().bold(), message),
-                    Err(e) => eprintln!("{} Could not reach daemon: {}. Run without --daemon for foreground mode.", "Warning:".yellow().bold(), e),
+                    Err(e) => eprintln!("{} Could not contact daemon: {}", "Error:".red().bold(), e),
                     _ => {}
                 }
                 return Ok(());
             }
 
-            // Foreground live music visualization
-            run_foreground_music(style, color, fps, sensitivity).await?;
+            // Foreground visualization
+            println!(
+                "{} Starting interactive foreground music visualization ({})",
+                "Music Studio:".magenta().bold(),
+                style.cyan()
+            );
+
+            let vis_style = VisualizerStyle::from_name(&style)
+                .ok_or_else(|| anyhow::anyhow!("Unknown visualizer style '{}'", style))?;
+
+            let custom_tint = color.and_then(|c| Color::from_str(&c).ok());
+
+            let dev = AjazzDevice::open_with_preference(pref_mode, dev_override)?;
+            println!("Target hardware: {} ({:?})", dev.info().devnode.cyan(), dev.connection_mode());
+            dev.enter_live_music_mode()?;
+
+            let capture = AudioCapture::new(None)?;
+            println!("Default audio source initialized @ {} Hz", capture.sample_rate());
+
+            let mut analyzer = SpectrumAnalyzer::new(capture.sample_rate(), sensitivity);
+            let mut renderer = MusicRenderer::new(vis_style, custom_tint);
+
+            let target_fps = fps.clamp(10, 60);
+            let frame_dur = Duration::from_micros((1_000_000 / target_fps as u64).max(16_666));
+
+            println!("Streaming to keyboard at ~{} FPS. Press Ctrl+C to stop.", target_fps);
+
+            loop {
+                let start = Instant::now();
+                let pcm = capture.read_latest(FFT_SIZE);
+                if !pcm.is_empty() {
+                    analyzer.update(&pcm);
+                }
+
+                let frame = renderer.render(&analyzer, 0.033);
+                let _ = dev.send_live_frame(&frame);
+
+                let elapsed = start.elapsed();
+                if elapsed < frame_dur {
+                    std::thread::sleep(frame_dur - elapsed);
+                }
+            }
         }
 
         Commands::Key { key, color } => {
             let c = Color::from_str(&color)?;
-            let keys_to_set = if key.to_lowercase() == "wasd" {
-                vec!["w", "a", "s", "d"]
-            } else if key.to_lowercase() == "arrows" {
-                vec!["up", "down", "left", "right"]
-            } else {
-                vec![key.as_str()]
-            };
+            let key_info = find_key_by_name(&key)
+                .ok_or_else(|| anyhow::anyhow!("Unknown key identifier '{}'", key))?;
 
-            let mut matrix = [Color::BLACK; TOTAL_LEDS];
-            for k_name in keys_to_set {
-                if let Some(k) = find_key_by_name(k_name) {
-                    matrix[k.led_idx] = c;
-                    println!("Set key {} -> {}", k.label.bold(), c);
-                } else {
-                    eprintln!("{} Key '{}' not recognized", "Warning:".yellow().bold(), k_name);
-                }
-            }
-
-            let dev = AjazzDevice::open_auto()?;
-            dev.set_custom_matrix(&matrix, 5)?;
-            println!("{}", "Uploaded custom matrix to keyboard.".green().bold());
-        }
-
-        Commands::Sleep { minutes } => {
-            if let Ok(resp) = try_daemon_request(DaemonRequest::SetSleep { minutes }).await {
-                if let DaemonResponse::Ok { message } = resp {
+            if dev_override.is_none() {
+                let req = DaemonRequest::SetCustomKey {
+                    key: key.clone(),
+                    color: color.clone(),
+                };
+                if let Ok(DaemonResponse::Ok { message }) = try_daemon_request(req).await {
                     println!("{} {}", "Success:".green().bold(), message);
                     return Ok(());
                 }
             }
 
-            let dev = AjazzDevice::open_auto()?;
-            dev.set_sleep_timeout(minutes)?;
-            println!("{} Configured sleep timeout to {} min", "Success:".green().bold(), minutes);
+            let dev = AjazzDevice::open_with_preference(pref_mode, dev_override)?;
+            let mut matrix = [Color::BLACK; TOTAL_LEDS];
+            matrix[key_info.led_idx] = c;
+            dev.set_custom_matrix(&matrix, 5)?;
+            println!("{} Set key '{}' to {}", "Success:".green().bold(), key_info.label, c);
         }
 
-        Commands::Daemon { action } => match action.to_lowercase().as_str() {
+        Commands::Sleep { minutes } => {
+            if dev_override.is_none() {
+                let req = DaemonRequest::SetSleep { minutes };
+                if let Ok(DaemonResponse::Ok { message }) = try_daemon_request(req).await {
+                    println!("{} {}", "Success:".green().bold(), message);
+                    return Ok(());
+                }
+            }
+
+            let dev = AjazzDevice::open_with_preference(pref_mode, dev_override)?;
+            dev.set_sleep_timeout(minutes)?;
+            println!("{} Set sleep timeout to {} min", "Success:".green().bold(), minutes);
+        }
+
+        Commands::Daemon { action } => match action.as_str() {
             "ping" => match try_daemon_request(DaemonRequest::Ping).await {
                 Ok(DaemonResponse::Pong) => println!("{}", "Daemon is running (PONG)".green().bold()),
-                Ok(other) => println!("Daemon response: {:?}", other),
-                Err(e) => eprintln!("Daemon error: {}", e),
+                _ => println!("{}", "Daemon is unreachable".red().bold()),
+            },
+            "status" => match try_daemon_request(DaemonRequest::GetStatus).await {
+                Ok(DaemonResponse::Status(st)) => print_status(&st, "Daemon"),
+                Ok(DaemonResponse::Error { message }) => eprintln!("{} {}", "Daemon error:".red().bold(), message),
+                _ => println!("{}", "Daemon is unreachable".red().bold()),
             },
             "stop-music" => match try_daemon_request(DaemonRequest::StopMusic).await {
-                Ok(DaemonResponse::Ok { message }) => println!("{}", message.green().bold()),
-                Err(e) => eprintln!("Daemon error: {}", e),
-                _ => {}
+                Ok(DaemonResponse::Ok { message }) => println!("{} {}", "Success:".green().bold(), message),
+                _ => eprintln!("{}", "Failed to stop music or daemon unreachable".red()),
             },
             "shutdown" => match try_daemon_request(DaemonRequest::Shutdown).await {
-                Ok(DaemonResponse::Ok { message }) => println!("{}", message.green().bold()),
-                Err(e) => eprintln!("Daemon error: {}", e),
-                _ => {}
+                Ok(_) => println!("{}", "Daemon shutdown requested".yellow()),
+                _ => println!("{}", "Daemon already offline".yellow()),
             },
-            other => eprintln!("Unknown daemon action '{}'. Try: ping, stop-music, shutdown", other),
+            other => eprintln!("Unknown action '{}'. Valid actions: ping, status, stop-music, shutdown", other),
         },
     }
 
     Ok(())
 }
 
-fn print_status(st: &ajazz_hid::DeviceStatus, source: &str) {
+fn print_status(status: &ajazz_hid::DeviceStatus, source: &str) {
     println!("{}", "=== Ajazz AK820 Max Status ===".cyan().bold());
-    println!("  Source:          {}", source.yellow());
-
-    if let Some(bat) = st.battery_percentage {
+    println!("  Source:          {}", source);
+    if let Some(bat) = status.battery_percentage {
         let bat_str = format!("{}%", bat);
         let colored_bat = if bat > 50 {
-            bat_str.green().bold()
+            bat_str.green()
         } else if bat > 20 {
-            bat_str.yellow().bold()
+            bat_str.yellow()
         } else {
-            bat_str.red().bold()
+            bat_str.red()
         };
         println!("  Battery:         {}", colored_bat);
     } else {
-        println!("  Battery:         {}", "N/A (Wired mode)".dimmed());
+        println!("  Battery:         {}", "Unknown / Wired".dimmed());
     }
 
-    let charging_str = match st.power_state {
-        PowerState::Charging => "Charging (Plugged in)".green().bold(),
-        PowerState::FullyCharged => "Fully Charged".green().bold(),
-        PowerState::OnBattery => "On Battery".yellow(),
-        PowerState::Unknown => "Connected".white(),
+    let pwr_str = match status.power_state {
+        PowerState::Charging => "Charging".yellow().bold(),
+        PowerState::OnBattery => "On Battery".blue(),
+        PowerState::FullyCharged => "Fully Charged / Cable Plugged".green().bold(),
+        PowerState::Unknown => "Unknown".dimmed(),
     };
-    println!("  Power State:     {}", charging_str);
-}
-
-async fn run_foreground_music(
-    style_str: String,
-    color_str: Option<String>,
-    fps: u32,
-    sensitivity: f32,
-) -> anyhow::Result<()> {
-    let style = VisualizerStyle::from_name(&style_str)
-        .ok_or_else(|| anyhow::anyhow!("Unknown visualizer style '{}'", style_str))?;
-
-    let custom_col = color_str.and_then(|c| Color::from_str(&c).ok());
-    let dev = AjazzDevice::open_auto()?;
-    println!("{}", "Connecting to audio stream...".cyan());
-
-    let capture = AudioCapture::new(None)?;
-    dev.enter_live_music_mode()?;
-
-    println!(
-        "{} Live music visualization running [Style: {}, FPS: {}]",
-        "Active:".green().bold(),
-        style.name().bold(),
-        fps
-    );
-    println!("{}", "Press Ctrl+C to stop.".dimmed());
-
-    let mut analyzer = SpectrumAnalyzer::new(capture.sample_rate(), sensitivity);
-    let mut renderer = MusicRenderer::new(style, custom_col);
-
-    let period = Duration::from_micros(1_000_000 / fps.clamp(10, 60) as u64);
-    let start_time = Instant::now();
-
-    loop {
-        let loop_start = Instant::now();
-        let pcm = capture.read_latest(FFT_SIZE * 2);
-
-        analyzer.update(&pcm);
-        let t = start_time.elapsed().as_secs_f32();
-        let frame = renderer.render(&analyzer, t);
-
-        if let Err(e) = dev.send_live_frame(&frame) {
-            eprintln!("Warning sending frame: {}", e);
-        }
-
-        // Render console ASCII meter
-        print!("\r[Audio Energy] [");
-        let bars = (analyzer.energy * 30.0).round() as usize;
-        for i in 0..30 {
-            if i < bars {
-                print!("{}", "=".green());
-            } else {
-                print!(" ");
-            }
-        }
-        print!("] Bass: {:.2}   ", analyzer.bass);
-        use std::io::Write;
-        std::io::stdout().flush().ok();
-
-        let elapsed = loop_start.elapsed();
-        if elapsed < period {
-            tokio::time::sleep(period - elapsed).await;
-        }
-    }
+    println!("  Power State:     {}", pwr_str);
 }

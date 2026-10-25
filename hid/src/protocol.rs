@@ -1,5 +1,5 @@
-use ajazz_rgb::color::Color;
-use ajazz_rgb::effects::EffectSettings;
+use ajazz_rgb::color::{Color, PaletteColor};
+use ajazz_rgb::effects::{EffectMode, EffectSettings};
 use ajazz_rgb::layout::TOTAL_LEDS;
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,7 @@ pub const BYCOMBO_PACKET_LEN: usize = 20;
 pub const BYCOMBO_REPORT_ID_OUT: u8 = 0x13;
 pub const BYCOMBO_CMD_STREAM: u8 = 0x88;
 pub const BYCOMBO_CMD_CUSTOM: u8 = 0x8E;
+pub const BYCOMBO_CMD_SET_LED: u8 = 0x04;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PowerState {
@@ -182,26 +183,109 @@ pub fn parse_bycombo_status(feature_buf: &[u8]) -> Option<DeviceStatus> {
     })
 }
 
-pub fn bycombo_wired_light_feature(settings: &EffectSettings) -> [u8; 6] {
-    let mode_byte = settings.mode.mode_id();
-    let bri_byte = settings.brightness.clamp(1, 5);
-    let speed_byte = settings.speed.clamp(1, 5);
-    let dir_byte = settings.direction as u8;
-    let col_byte = settings.palette_color as u8;
-
-    [0x05, mode_byte, bri_byte, speed_byte, dir_byte, col_byte]
+/// Convert high-level EffectMode to BY-COMBO hardware mode ID
+pub fn bycombo_hw_mode(mode: EffectMode) -> u8 {
+    match mode {
+        EffectMode::Static => 1,
+        EffectMode::Spectrum => 2,
+        EffectMode::Breathing => 3,
+        EffectMode::KeyBreathing | EffectMode::Ejection => 19,
+        EffectMode::Rain => 15,
+        EffectMode::Scroll | EffectMode::Kaleidoscope => 13,
+        EffectMode::RippleLr => 20,
+        EffectMode::Starry => 16,
+        EffectMode::TopBottom => 18,
+        EffectMode::RippleUd => 5,
+        EffectMode::Cross => 7,
+        EffectMode::Galloping => 17,
+        EffectMode::SineWave => 12,
+        EffectMode::Windmill => 28,
+        EffectMode::Music => 22,
+        EffectMode::Screen => 23,
+        EffectMode::Custom => 21,
+        EffectMode::Off => 0,
+    }
 }
 
-pub fn bycombo_wired_matrix_feature(matrix: &[Color; TOTAL_LEDS]) -> Vec<u8> {
-    let mut buf = vec![0u8; 520];
-    buf[0] = 0x06; // Report ID 6
-    for (i, col) in matrix.iter().enumerate() {
-        let offset = 1 + i * 3;
-        if offset + 2 < buf.len() {
-            buf[offset] = col.r;
-            buf[offset + 1] = col.g;
-            buf[offset + 2] = col.b;
-        }
+/// Convert high-level PaletteColor to BY-COMBO palette color index
+pub fn bycombo_palette_color(color: PaletteColor) -> u8 {
+    match color {
+        PaletteColor::Rainbow => 0,
+        PaletteColor::Red => 1,
+        PaletteColor::Green => 2,
+        PaletteColor::Blue => 3,
+        PaletteColor::Yellow => 4,
+        PaletteColor::Magenta => 5,
+        PaletteColor::Cyan => 6,
+        PaletteColor::White => 7,
     }
-    buf
+}
+
+/// Build full Report ID 6 profile packet for BY-COMBO Wired mode
+pub fn bycombo_wired_profile_packet(settings: &EffectSettings) -> Vec<u8> {
+    let mut pkt = vec![0u8; 520];
+    pkt[0] = 0x06; // Report ID 6
+    pkt[1] = 0x03; // Command Write Profile
+    pkt[2] = 0xB6; // Profile Subcommand
+    pkt[12] = 0x01; // Enable
+    let hw_mode = bycombo_hw_mode(settings.mode);
+    pkt[13] = hw_mode;
+    pkt[14] = 0x00; // Profile 0
+    pkt[22] = 0xFF;
+    pkt[23] = 0xFF;
+
+    let col_byte = bycombo_palette_color(settings.palette_color);
+    let bri_byte = (settings.brightness.clamp(1, 5) - 1) & 0x0F;
+    let speed_byte = (settings.speed.clamp(1, 5) - 1) & 0x0F;
+    let dir_byte = settings.direction as u8 & 1;
+
+    for m in 0..20 {
+        pkt[24 + m * 2] = (col_byte & 0x0F) | (dir_byte << 7);
+        pkt[24 + m * 2 + 1] = (bri_byte << 4) | speed_byte;
+    }
+    pkt
+}
+
+/// Build 20-byte Report ID 0x13 packet for BY-COMBO Wireless 2.4GHz
+pub fn bycombo_wireless_lighting_packet(settings: &EffectSettings) -> Vec<u8> {
+    let hw_mode = bycombo_hw_mode(settings.mode);
+    let bri_byte = settings.brightness.clamp(1, 5) - 1;
+    let speed_byte = settings.speed.clamp(1, 5) - 1;
+    let dir_byte = settings.direction as u8;
+    let col_byte = bycombo_palette_color(settings.palette_color);
+
+    build_bycombo_packet(
+        BYCOMBO_REPORT_ID_OUT,
+        BYCOMBO_CMD_SET_LED,
+        0,
+        &[hw_mode, bri_byte, speed_byte, dir_byte, col_byte],
+    )
+}
+
+/// Build Report ID 6 feature packets for custom per-key matrix in BY-COMBO Wired mode
+pub fn bycombo_wired_matrix_packets(matrix: &[Color; TOTAL_LEDS]) -> Vec<Vec<u8>> {
+    let chunks = [(0xBCu8, 0usize, 42usize), (0xC0u8, 42usize, 42usize)];
+    let mut out = Vec::new();
+
+    for (chunk_id, start_idx, count) in chunks {
+        let mut pkt = vec![0u8; 520];
+        pkt[0] = 0x06;
+        pkt[1] = 0x09; // CMD_SET_MATRIX
+        pkt[2] = chunk_id;
+        pkt[3] = 0x40;
+
+        for i in 0..count {
+            let key_idx = start_idx + i;
+            if key_idx < matrix.len() {
+                let offset = 4 + i * 3;
+                if offset + 2 < pkt.len() {
+                    pkt[offset] = matrix[key_idx].r;
+                    pkt[offset + 1] = matrix[key_idx].g;
+                    pkt[offset + 2] = matrix[key_idx].b;
+                }
+            }
+        }
+        out.push(pkt);
+    }
+    out
 }

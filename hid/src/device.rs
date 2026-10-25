@@ -1,4 +1,4 @@
-use crate::discovery::{enumerate_devices, DiscoveredDevice, ProtocolVariant};
+use crate::discovery::{enumerate_devices, ConnectionMode, DiscoveredDevice, ProtocolVariant};
 use crate::error::DeviceError;
 use crate::protocol::*;
 use crate::transport::{HidrawTransport, SimulatedTransport, Transport};
@@ -7,7 +7,7 @@ use ajazz_rgb::effects::EffectSettings;
 use ajazz_rgb::layout::TOTAL_LEDS;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 pub struct AjazzDevice {
     transport: Arc<Mutex<Box<dyn Transport>>>,
@@ -16,6 +16,13 @@ pub struct AjazzDevice {
 
 impl AjazzDevice {
     pub fn open_auto() -> Result<Self, DeviceError> {
+        Self::open_with_preference(None, None)
+    }
+
+    pub fn open_with_preference(
+        preferred_mode: Option<ConnectionMode>,
+        devnode_override: Option<&str>,
+    ) -> Result<Self, DeviceError> {
         if std::env::var("AJAZZ_SIMULATED").is_ok() {
             info!("AJAZZ_SIMULATED set; using simulated in-memory keyboard");
             return Ok(Self::open_simulated());
@@ -24,15 +31,94 @@ impl AjazzDevice {
         let devs = enumerate_devices();
         if devs.is_empty() {
             return Err(DeviceError::NotFound(
-                "No Ajazz AK820 Max device detected on USB or 2.4G. Check connection or udev rules."
+                "No Ajazz AK820 Max device detected on USB Wired, 2.4G Wireless, or Bluetooth. Check connection or udev rules."
                     .to_string(),
             ));
         }
 
+        // If explicit devnode was requested, find it
+        if let Some(path) = devnode_override {
+            let selected = devs
+                .iter()
+                .find(|d| d.devnode == path || d.name == path)
+                .ok_or_else(|| {
+                    DeviceError::NotFound(format!("Device path {} not matched as an Ajazz keyboard", path))
+                })?
+                .clone();
+
+            info!(
+                "Opening specified Ajazz device: {} ({}, mode: {:?})",
+                selected.device_name, selected.devnode, selected.connection_mode
+            );
+            let transport = Box::new(HidrawTransport::open(&selected.devnode)?);
+            return Ok(Self {
+                transport: Arc::new(Mutex::new(transport)),
+                device_info: selected,
+            });
+        }
+
+        // If specific mode was preferred (e.g. Wired, Wireless24G, or Bluetooth)
+        if let Some(mode) = preferred_mode {
+            if let Some(selected) = devs.iter().find(|d| d.connection_mode == mode) {
+                info!(
+                    "Connecting to requested {:?} mode on {} ({})",
+                    mode, selected.device_name, selected.devnode
+                );
+                let transport = Box::new(HidrawTransport::open(&selected.devnode)?);
+                return Ok(Self {
+                    transport: Arc::new(Mutex::new(transport)),
+                    device_info: selected.clone(),
+                });
+            } else {
+                warn!("Preferred mode {:?} not currently detected; checking available modes", mode);
+            }
+        }
+
+        // Auto-Probe:
+        // Try Wired candidates first since physical cable is prioritized over RF dongle
+        for candidate in &devs {
+            if candidate.connection_mode == ConnectionMode::Wired {
+                if let Ok(mut t) = HidrawTransport::open(&candidate.devnode) {
+                    // Test ping handshake
+                    let ping = [0x05, 0x81, 0x00, 0x00, 0x00, 0x00];
+                    if t.send_feature(&ping).is_ok() {
+                        info!(
+                            "Auto-detected active USB Wired keyboard on {}",
+                            candidate.devnode
+                        );
+                        return Ok(Self {
+                            transport: Arc::new(Mutex::new(Box::new(t))),
+                            device_info: candidate.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Next try Wireless / Dongle candidates
+        for candidate in &devs {
+            if candidate.connection_mode == ConnectionMode::Wireless24G {
+                if let Ok(mut t) = HidrawTransport::open(&candidate.devnode) {
+                    let mut buf = [0u8; 8];
+                    if t.get_feature(0x06, &mut buf).is_ok() {
+                        info!(
+                            "Auto-detected active 2.4GHz Wireless receiver on {}",
+                            candidate.devnode
+                        );
+                        return Ok(Self {
+                            transport: Arc::new(Mutex::new(Box::new(t))),
+                            device_info: candidate.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Fall back to top prioritized candidate in list
         let selected = devs.into_iter().next().unwrap();
         info!(
-            "Connecting to Ajazz keyboard: {} ({}) via {:?}",
-            selected.device_name, selected.devnode, selected.protocol
+            "Connecting to Ajazz keyboard: {} ({}, mode: {:?})",
+            selected.device_name, selected.devnode, selected.connection_mode
         );
 
         let transport = Box::new(HidrawTransport::open(&selected.devnode)?);
@@ -43,19 +129,7 @@ impl AjazzDevice {
     }
 
     pub fn open_path(path: &str) -> Result<Self, DeviceError> {
-        let devs = enumerate_devices();
-        let selected = devs
-            .into_iter()
-            .find(|d| d.devnode == path || d.name == path)
-            .ok_or_else(|| {
-                DeviceError::NotFound(format!("Device path {} not matched as an Ajazz keyboard", path))
-            })?;
-
-        let transport = Box::new(HidrawTransport::open(&selected.devnode)?);
-        Ok(Self {
-            transport: Arc::new(Mutex::new(transport)),
-            device_info: selected,
-        })
+        Self::open_with_preference(None, Some(path))
     }
 
     pub fn open_simulated() -> Self {
@@ -64,11 +138,13 @@ impl AjazzDevice {
             devnode: "/dev/simulated".to_string(),
             vendor_id: 0x258A,
             product_id: 0x010C,
+            bus_type: 3,
             device_name: "Simulated Ajazz AK820 Max".to_string(),
             interface: Some(1),
-            usage_page: Some(0xFF00),
-            usage: Some(0x0001),
+            usage_pages: vec![0xFF00],
+            report_ids: vec![5, 6],
             protocol: ProtocolVariant::ByComboWired,
+            connection_mode: ConnectionMode::Wired,
             is_wired: true,
         };
 
@@ -84,6 +160,10 @@ impl AjazzDevice {
 
     pub fn protocol(&self) -> ProtocolVariant {
         self.device_info.protocol
+    }
+
+    pub fn connection_mode(&self) -> ConnectionMode {
+        self.device_info.connection_mode
     }
 
     pub fn status(&self) -> Result<DeviceStatus, DeviceError> {
@@ -107,13 +187,12 @@ impl AjazzDevice {
                     .ok_or_else(|| DeviceError::Protocol("invalid BY-COMBO wireless status".into()))
             }
             ProtocolVariant::ByComboWired => {
-                let mut buf = [0u8; 8];
-                if t.get_feature(0x06, &mut buf).is_ok() && buf[0] == 0x06 {
-                    if let Some(st) = parse_bycombo_status(&buf) {
-                        return Ok(st);
-                    }
-                }
-                // Default wired status when plugged in via cable
+                let req = [0x05, 0x81, 0x00, 0x00, 0x00, 0x00];
+                let _ = t.send_feature(&req);
+                std::thread::sleep(Duration::from_millis(15));
+                let mut buf = vec![0u8; 520];
+                let _ = t.get_feature(0x06, &mut buf);
+
                 Ok(DeviceStatus {
                     battery_percentage: Some(100),
                     power_state: PowerState::FullyCharged,
@@ -133,22 +212,14 @@ impl AjazzDevice {
                 std::thread::sleep(Duration::from_millis(15));
             }
             ProtocolVariant::ByComboWireless => {
-                // BY-COMBO wireless command 0x15: mode, brightness, speed, direction, color
-                let payload = [
-                    settings.mode.mode_id(),
-                    settings.brightness.clamp(1, 5),
-                    settings.speed.clamp(1, 5),
-                    settings.direction as u8,
-                    settings.palette_color as u8,
-                ];
-                let pkt = build_bycombo_packet(BYCOMBO_REPORT_ID_OUT, 0x07, 0, &payload);
+                let pkt = bycombo_wireless_lighting_packet(settings);
                 t.write_packet(&pkt)?;
                 std::thread::sleep(Duration::from_millis(15));
             }
             ProtocolVariant::ByComboWired => {
-                let feat = bycombo_wired_light_feature(settings);
-                t.send_feature(&feat)?;
-                std::thread::sleep(Duration::from_millis(15));
+                let pkt = bycombo_wired_profile_packet(settings);
+                t.send_feature(&pkt)?;
+                std::thread::sleep(Duration::from_millis(20));
             }
         }
         debug!("Applied lighting effect: {:?}", settings.mode);
@@ -159,11 +230,9 @@ impl AjazzDevice {
         let mut t = self.transport.lock().unwrap();
         match self.device_info.protocol {
             ProtocolVariant::ShinetekEvision => {
-                // Set mode 22 (music)
                 let pkt = build_shinetek_packet(CMD_SET_LIGHT, &[21, 4, 2, 0, 7]);
                 t.write_packet(&pkt)?;
                 std::thread::sleep(Duration::from_millis(20));
-                // Send stream begin
                 let begin = build_shinetek_packet(CMD_STREAM_BEGIN, &[]);
                 t.write_packet(&begin)?;
                 std::thread::sleep(Duration::from_millis(30));
@@ -174,9 +243,15 @@ impl AjazzDevice {
                 std::thread::sleep(Duration::from_millis(20));
             }
             ProtocolVariant::ByComboWired => {
-                // For wired, send stream enable feature report
-                let feat = [0x05, 22, 5, 3, 0, 7];
-                let _ = t.send_feature(&feat);
+                let mut pkt = vec![0u8; 520];
+                pkt[0] = 0x06;
+                pkt[1] = 0x03;
+                pkt[2] = 0xB6;
+                pkt[12] = 0x01;
+                pkt[13] = 22; // Music mode
+                pkt[22] = 0xFF;
+                pkt[23] = 0xFF;
+                let _ = t.send_feature(&pkt);
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
@@ -200,8 +275,10 @@ impl AjazzDevice {
                 }
             }
             ProtocolVariant::ByComboWired => {
-                let feat = bycombo_wired_matrix_feature(frame);
-                let _ = t.send_feature(&feat);
+                let chunks = bycombo_wired_matrix_packets(frame);
+                for chunk in chunks {
+                    let _ = t.send_feature(&chunk);
+                }
             }
         }
         Ok(())
@@ -233,8 +310,23 @@ impl AjazzDevice {
                 }
             }
             ProtocolVariant::ByComboWired => {
-                let feat = bycombo_wired_matrix_feature(matrix);
-                t.send_feature(&feat)?;
+                // Set custom mode
+                let mut pkt = vec![0u8; 520];
+                pkt[0] = 0x06;
+                pkt[1] = 0x03;
+                pkt[2] = 0xB6;
+                pkt[12] = 0x01;
+                pkt[13] = 21; // Custom / Self-define mode
+                pkt[22] = 0xFF;
+                pkt[23] = 0xFF;
+                let _ = t.send_feature(&pkt);
+                std::thread::sleep(Duration::from_millis(15));
+
+                let chunks = bycombo_wired_matrix_packets(matrix);
+                for chunk in chunks {
+                    let _ = t.send_feature(&chunk);
+                    std::thread::sleep(Duration::from_millis(5));
+                }
             }
         }
         info!("Per-key custom RGB matrix uploaded to keyboard");
