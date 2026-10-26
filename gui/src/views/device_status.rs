@@ -15,7 +15,7 @@ pub fn render_device_header(ui: &mut Ui, coordinator: &mut HardwareCoordinator) 
                         .strong(),
                 );
                 ui.label(
-                    egui::RichText::new("RGB STUDIO v1.1.0")
+                    egui::RichText::new("RGB STUDIO v1.1.1")
                         .small()
                         .color(ThemeColors::ACCENT_CYAN),
                 );

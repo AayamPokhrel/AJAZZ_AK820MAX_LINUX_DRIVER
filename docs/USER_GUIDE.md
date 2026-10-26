@@ -1,4 +1,4 @@
-# Ajazz AK820 Max — Linux User Guide (v1.1.0)
+# Ajazz AK820 Max — Linux User Guide (v1.1.1)
 
 This comprehensive guide covers using, configuring, building, and packaging the native Linux software suite for the **Ajazz AK820 Max** mechanical keyboard.
 

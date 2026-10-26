@@ -1,5 +1,5 @@
 use ajazz_rgb::color::{Color, PaletteColor};
-use ajazz_rgb::effects::{EffectMode, EffectSettings};
+use ajazz_rgb::effects::{Direction, EffectMode, EffectSettings};
 use ajazz_rgb::layout::TOTAL_LEDS;
 use serde::{Deserialize, Serialize};
 
@@ -183,25 +183,27 @@ pub fn parse_bycombo_status(feature_buf: &[u8]) -> Option<DeviceStatus> {
     })
 }
 
-/// Convert high-level EffectMode to BY-COMBO hardware mode ID
+/// Convert high-level EffectMode to BY-COMBO hardware mode ID matching KB.ini
 pub fn bycombo_hw_mode(mode: EffectMode) -> u8 {
     match mode {
         EffectMode::Static => 1,
-        EffectMode::Spectrum => 2,
-        EffectMode::Breathing => 3,
-        EffectMode::KeyBreathing | EffectMode::Ejection => 19,
-        EffectMode::Rain => 15,
-        EffectMode::Scroll | EffectMode::Kaleidoscope => 13,
-        EffectMode::RippleLr => 20,
-        EffectMode::Starry => 16,
-        EffectMode::TopBottom => 18,
-        EffectMode::RippleUd => 5,
-        EffectMode::Cross => 7,
-        EffectMode::Galloping => 17,
-        EffectMode::SineWave => 12,
-        EffectMode::Windmill => 28,
-        EffectMode::Music => 22,
-        EffectMode::Screen => 23,
+        EffectMode::Breathing => 2,
+        EffectMode::SineWave => 3,
+        EffectMode::Spectrum => 4,
+        EffectMode::RippleLr => 5,
+        EffectMode::RippleUd => 6,
+        EffectMode::Starry => 7,
+        EffectMode::Ejection => 8,
+        EffectMode::Kaleidoscope => 9,
+        EffectMode::Cross => 10,
+        EffectMode::KeyBreathing => 11,
+        EffectMode::Scroll => 12,
+        EffectMode::TopBottom => 13,
+        EffectMode::Rain => 14,
+        EffectMode::Windmill => 15,
+        EffectMode::Galloping => 16,
+        EffectMode::Music => 17,
+        EffectMode::Screen => 18,
         EffectMode::Custom => 21,
         EffectMode::Off => 0,
     }
@@ -210,39 +212,78 @@ pub fn bycombo_hw_mode(mode: EffectMode) -> u8 {
 /// Convert high-level PaletteColor to BY-COMBO palette color index
 pub fn bycombo_palette_color(color: PaletteColor) -> u8 {
     match color {
-        PaletteColor::Rainbow => 0,
-        PaletteColor::Red => 1,
-        PaletteColor::Green => 2,
-        PaletteColor::Blue => 3,
-        PaletteColor::Yellow => 4,
-        PaletteColor::Magenta => 5,
-        PaletteColor::Cyan => 6,
-        PaletteColor::White => 7,
+        PaletteColor::Red => 0,
+        PaletteColor::Yellow => 2,
+        PaletteColor::Green => 3,
+        PaletteColor::Cyan => 4,
+        PaletteColor::Blue => 5,
+        PaletteColor::Magenta => 6,
+        PaletteColor::Rainbow | PaletteColor::White => 7,
     }
 }
 
-/// Build full Report ID 6 profile packet for BY-COMBO Wired mode
-pub fn bycombo_wired_profile_packet(settings: &EffectSettings) -> Vec<u8> {
+/// Request current 128-byte LED configuration from device via Report ID 6
+pub fn bycombo_wired_get_led_request() -> Vec<u8> {
+    let mut req = vec![0u8; 520];
+    req[0] = 0x06;
+    req[1] = 0x84; // GetLED request
+    req[4] = 0x01; // 1 chunk
+    req[6] = 0x80; // 128 bytes
+    req
+}
+
+/// Build full Report ID 6 SetLED packet (520 bytes) for BY-COMBO Wired mode
+/// 1:1 vendor implementation from CDevG5KB::AccessData & CDevG5KB::SetLED
+pub fn bycombo_wired_set_led_packet(current_led_128: Option<&[u8]>, settings: &EffectSettings) -> Vec<u8> {
     let mut pkt = vec![0u8; 520];
+    // 8-byte CDevG5KB::AccessData header:
     pkt[0] = 0x06; // Report ID 6
-    pkt[1] = 0x03; // Command Write Profile
-    pkt[2] = 0xB6; // Profile Subcommand
-    pkt[12] = 0x01; // Enable
-    let hw_mode = bycombo_hw_mode(settings.mode);
-    pkt[13] = hw_mode;
-    pkt[14] = 0x00; // Profile 0
-    pkt[22] = 0xFF;
-    pkt[23] = 0xFF;
+    pkt[1] = 0x04; // cmd = 4 (SetLED)
+    pkt[2] = 0x01; // nOper = 1 (Write)
+    pkt[3] = 0x00;
+    pkt[4] = 0x01; // total_chunks = 1
+    pkt[5] = 0x00; // chunk_index = 0
+    pkt[6] = 0x80; // len lo = 128
+    pkt[7] = 0x00; // len hi = 0
 
-    let col_byte = bycombo_palette_color(settings.palette_color);
-    let bri_byte = (settings.brightness.clamp(1, 5) - 1) & 0x0F;
-    let speed_byte = (settings.speed.clamp(1, 5) - 1) & 0x0F;
-    let dir_byte = settings.direction as u8 & 1;
-
-    for m in 0..20 {
-        pkt[24 + m * 2] = (col_byte & 0x0F) | (dir_byte << 7);
-        pkt[24 + m * 2 + 1] = (bri_byte << 4) | speed_byte;
+    // Initialize payload with existing state or defaults
+    if let Some(existing) = current_led_128 {
+        let copy_len = existing.len().min(128);
+        pkt[8..8 + copy_len].copy_from_slice(&existing[..copy_len]);
     }
+
+    let hw_id = bycombo_hw_mode(settings.mode);
+    pkt[8 + 9] = 0x00;
+    pkt[8 + 10] = hw_id;
+
+    let bri = (settings.brightness.clamp(1, 5) - 1) & 0x0F;
+    let spd = (settings.speed.clamp(1, 5) - 1) & 0x0F;
+    let dir = if settings.direction == Direction::Left { 0x80 } else { 0x00 };
+    let col = match settings.palette_color {
+        PaletteColor::Red => 0,
+        PaletteColor::Yellow => 2,
+        PaletteColor::Green => 3,
+        PaletteColor::Cyan => 4,
+        PaletteColor::Blue => 5,
+        PaletteColor::Magenta => 6,
+        PaletteColor::Rainbow | PaletteColor::White => 7,
+    };
+
+    pkt[8 + 1] = spd;
+    pkt[8 + 2] = bri;
+
+    if hw_id >= 1 && hw_id <= 20 {
+        let off = 8 + 0x3a + ((hw_id - 1) as usize) * 2;
+        if off + 1 < pkt.len() {
+            pkt[off] = dir | bri;
+            pkt[off + 1] = (spd << 4) | (col & 0x0F);
+        }
+    }
+
+    // Magic trailer verified from hardware and decompilation
+    pkt[8 + 126] = 0x5A;
+    pkt[8 + 127] = 0xA5;
+
     pkt
 }
 
@@ -262,30 +303,85 @@ pub fn bycombo_wireless_lighting_packet(settings: &EffectSettings) -> Vec<u8> {
     )
 }
 
-/// Build Report ID 6 feature packets for custom per-key matrix in BY-COMBO Wired mode
-pub fn bycombo_wired_matrix_packets(matrix: &[Color; TOTAL_LEDS]) -> Vec<Vec<u8>> {
-    let chunks = [(0xBCu8, 0usize, 42usize), (0xC0u8, 42usize, 42usize)];
-    let mut out = Vec::new();
-
-    for (chunk_id, start_idx, count) in chunks {
-        let mut pkt = vec![0u8; 520];
-        pkt[0] = 0x06;
-        pkt[1] = 0x09; // CMD_SET_MATRIX
-        pkt[2] = chunk_id;
-        pkt[3] = 0x40;
-
-        for i in 0..count {
-            let key_idx = start_idx + i;
-            if key_idx < matrix.len() {
-                let offset = 4 + i * 3;
-                if offset + 2 < pkt.len() {
-                    pkt[offset] = matrix[key_idx].r;
-                    pkt[offset + 1] = matrix[key_idx].g;
-                    pkt[offset + 2] = matrix[key_idx].b;
-                }
-            }
-        }
-        out.push(pkt);
-    }
-    out
+/// Request matrix RGB dump via Report ID 6 GetLedRgbTab
+pub fn bycombo_wired_get_matrix_request() -> Vec<u8> {
+    let mut req = vec![0u8; 520];
+    req[0] = 0x06;
+    req[1] = 0x8A; // GetLedRgbTab (0x80 | 0x0A)
+    req[4] = 0x01; // 1 chunk
+    req[6] = 0x00; // 512 bytes = 0x0200
+    req[7] = 0x02;
+    req
 }
+
+/// Build full Report ID 6 SetLedRgbTab packet (520 bytes) for BY-COMBO Wired mode
+/// 1:1 vendor implementation from CDevG5KB::AccessData & CDevG5KB::SetLedRgbTab
+pub fn bycombo_wired_matrix_packet(matrix: &[Color; TOTAL_LEDS]) -> Vec<u8> {
+    let mut pkt = vec![0u8; 520];
+    pkt[0] = 0x06; // Report ID 6
+    pkt[1] = 0x0A; // cmd = 0x0A (SetLedRgbTab)
+    pkt[2] = 0x01; // nOper = 1 (Write)
+    pkt[3] = 0x00;
+    pkt[4] = 0x01; // total_chunks = 1
+    pkt[5] = 0x00; // chunk_index = 0
+    pkt[6] = 0x00; // len lo = 512 (0x0200)
+    pkt[7] = 0x02; // len hi = 2
+
+    // Populate 108 RGB LEDs (3 bytes each)
+    for (i, c) in matrix.iter().enumerate() {
+        let off = 8 + i * 3;
+        if off + 2 < 8 + 510 {
+            pkt[off] = c.r;
+            pkt[off + 1] = c.g;
+            pkt[off + 2] = c.b;
+        }
+    }
+
+    // CRC / Magic trailer at end of 512-byte payload
+    pkt[8 + 510] = 0x5A;
+    pkt[8 + 511] = 0xA5;
+
+    pkt
+}
+
+/// Request device configuration dump via Report ID 6 GetCfg (0x83)
+pub fn bycombo_wired_get_cfg_request() -> Vec<u8> {
+    let mut req = vec![0u8; 520];
+    req[0] = 0x06;
+    req[1] = 0x83; // GetCfg (0x80 | 0x03)
+    req[2] = 0x02; // Read
+    req[4] = 0x01; // 1 chunk
+    req[6] = 0x14; // 20 bytes
+    req
+}
+
+/// Build full Report ID 6 SetCfg packet (520 bytes) for BY-COMBO Wired mode
+/// 1:1 vendor implementation from CDevG5KB::AccessData & CDevG5KB::SetCfg
+pub fn bycombo_wired_set_cfg_packet(current_cfg: Option<&[u8]>, sleep_minutes: u8) -> Vec<u8> {
+    let mut pkt = vec![0u8; 520];
+    pkt[0] = 0x06; // Report ID 6
+    pkt[1] = 0x03; // cmd = 0x03 (SetCfg)
+    pkt[2] = 0x01; // nOper = 1 (Write)
+    pkt[3] = 0x00;
+    pkt[4] = 0x01; // total_chunks = 1
+    pkt[5] = 0x00; // chunk_index = 0
+    pkt[6] = 0x14; // len lo = 20
+    pkt[7] = 0x00; // len hi = 0
+
+    let payload = &mut pkt[8..28];
+    if let Some(existing) = current_cfg {
+        let copy_len = existing.len().min(20);
+        payload[..copy_len].copy_from_slice(&existing[..copy_len]);
+    }
+
+    let sleep_secs: u16 = (sleep_minutes as u16) * 60;
+    payload[2] = (sleep_secs & 0xFF) as u8;
+    payload[3] = ((sleep_secs >> 8) & 0xFF) as u8;
+
+    // Vendor magic trailer at bytes 18..20
+    payload[18] = 0x5A;
+    payload[19] = 0xA5;
+
+    pkt
+}
+

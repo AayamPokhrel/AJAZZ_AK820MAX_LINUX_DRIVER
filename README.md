@@ -1,7 +1,7 @@
 # Ajazz AK820 Max — Linux Native Driver, GUI Studio & RGB Music Visualizer
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
-[![Version: 1.1.0](https://img.shields.io/badge/Version-v1.1.0-brightgreen.svg)](Cargo.toml)
+[![Version: 1.1.1](https://img.shields.io/badge/Version-v1.1.1-brightgreen.svg)](Cargo.toml)
 [![NixOS](https://img.shields.io/badge/NixOS-Flake%20Ready-5277C3.svg?logo=nixos&logoColor=white)](flake.nix)
 [![Rust 2021](https://img.shields.io/badge/Rust-2021%20Edition-DEA584.svg?logo=rust&logoColor=white)](Cargo.toml)
 
@@ -11,8 +11,13 @@ Built natively for **Linux & NixOS**, this project serves as a full, drop-in rep
 
 ---
 
-## What's New in v1.1.0
+## What's New in v1.1.1
 
+- 🔬 **1:1 Vendor Binary Reverse-Engineered Driver (`OemDrv.exe` & `CDevG5KB`)**:
+  - Replaced all heuristic framing with the exact vendor binary communication protocol decompiled from `OemDrv.exe` (`0x0048abe0` `AccessData`, `0x0048b2d0` `SetLED`, `0x0048b970` `SetLedRgbTab`, `0x0048ae20` `SetCfg`).
+  - Strict 520-byte Report ID 6 Feature Reports (`HIDIOCSFEATURE`/`HIDIOCGFEATURE`) with the required `0x5A 0xA5` magic payload trailer.
+  - Resolved `No such device` (`ENODEV`, error 19) and stale device node caching with dynamic re-probing and strict non-swallowing error propagation.
+  - Full hardware verification on real hardware (`258A:010C` Wired & `3554:FA09` Wireless): lighting effects, static color, per-key RGB canvas, audio-reactive visualizer streaming, and sleep timer.
 - 🎨 **Native Linux GUI Application (`ak820-gui`)**:
   - Built with modern, hardware-accelerated **egui / eframe** running smoothly on both **Wayland** and **X11**.
   - **Interactive 75% (82-Key) Visual Canvas**: Proportional, physical layout matching the keyboard, with live color previews, per-key custom painting, click selection, drag marquee box, and quick presets (`WASD`, `Arrows`, `Function Row`, `Numbers`, `Alphas`, `Modifiers`, `All Keys`).

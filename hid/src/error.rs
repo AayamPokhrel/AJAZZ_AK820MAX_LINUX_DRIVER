@@ -12,6 +12,16 @@ pub enum DeviceError {
         #[source]
         source: std::io::Error,
     },
+    #[error("Hardware syscall {syscall} failed on {path} (Report ID: 0x{report_id:02X}, len: {len}, hex: {hex_dump}): {source}")]
+    HardwareIo {
+        syscall: &'static str,
+        path: String,
+        report_id: u8,
+        len: usize,
+        hex_dump: String,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("HID API error: {0}")]
     HidApi(#[from] hidapi::HidError),
     #[error("device disconnected or broken pipe")]
@@ -21,3 +31,4 @@ pub enum DeviceError {
     #[error("invalid parameter: {0}")]
     InvalidParameter(String),
 }
+

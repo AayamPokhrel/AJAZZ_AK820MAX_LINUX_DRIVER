@@ -51,6 +51,10 @@ pub enum DaemonRequest {
         key: String,
         color: String,
     },
+    SetCustomMatrix {
+        colors: Vec<String>,
+        brightness: Option<u8>,
+    },
     SetSleep {
         minutes: u8,
     },
@@ -288,16 +292,18 @@ impl HardwareCoordinator {
         self.custom_matrix = *matrix;
 
         if self.mode == ConnectionMode::ConnectedDaemon {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
-            let req = DaemonRequest::SetEffect {
-                mode: "custom".to_string(),
+            let colors: Vec<String> = matrix.iter().map(|c| c.to_hex()).collect();
+            let req = DaemonRequest::SetCustomMatrix {
+                colors,
                 brightness: Some(brightness),
-                speed: Some(4),
-                direction: None,
-                color: None,
             };
-            let _ = rt.block_on(send_daemon_request(req));
-            Ok(())
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+            match rt.block_on(send_daemon_request(req)) {
+                Ok(DaemonResponse::Ok { .. }) => Ok(()),
+                Ok(DaemonResponse::Error { message }) => Err(message),
+                Err(e) => Err(e),
+                _ => Ok(()),
+            }
         } else if let Some(dev) = &self.direct_device {
             dev.set_custom_matrix(matrix, brightness).map_err(|e| e.to_string())
         } else {

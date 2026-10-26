@@ -220,9 +220,12 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
         DaemonRequest::GetStatus => match st.ensure_device() {
             Ok(dev) => match dev.status() {
                 Ok(status) => DaemonResponse::Status(status),
-                Err(e) => DaemonResponse::Error {
-                    message: format!("Failed to read status: {}", e),
-                },
+                Err(e) => {
+                    st.device = None;
+                    DaemonResponse::Error {
+                        message: format!("Failed to read status: {}", e),
+                    }
+                }
             },
             Err(e) => DaemonResponse::Error {
                 message: format!("Device not connected: {}", e),
@@ -299,9 +302,12 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
                     Ok(_) => DaemonResponse::Ok {
                         message: format!("Set effect to {:?}", effect_mode),
                     },
-                    Err(e) => DaemonResponse::Error {
-                        message: format!("Failed to set effect: {}", e),
-                    },
+                    Err(e) => {
+                        st.device = None;
+                        DaemonResponse::Error {
+                            message: format!("Failed to set effect: {}", e),
+                        }
+                    }
                 },
                 Err(e) => DaemonResponse::Error {
                     message: format!("Device not connected: {}", e),
@@ -335,9 +341,12 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
                     Ok(_) => DaemonResponse::Ok {
                         message: format!("Set static color to {}", c),
                     },
-                    Err(e) => DaemonResponse::Error {
-                        message: format!("Failed to set static color: {}", e),
-                    },
+                    Err(e) => {
+                        st.device = None;
+                        DaemonResponse::Error {
+                            message: format!("Failed to set static color: {}", e),
+                        }
+                    }
                 },
                 Err(e) => DaemonResponse::Error {
                     message: format!("Device not connected: {}", e),
@@ -456,9 +465,12 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
                             Ok(_) => DaemonResponse::Ok {
                                 message: format!("Set key '{}' to {}", k.label, c),
                             },
-                            Err(e) => DaemonResponse::Error {
-                                message: format!("Failed to upload custom matrix: {}", e),
-                            },
+                            Err(e) => {
+                                st.device = None;
+                                DaemonResponse::Error {
+                                    message: format!("Failed to upload custom matrix: {}", e),
+                                }
+                            }
                         },
                         Err(e) => DaemonResponse::Error {
                             message: format!("Device not connected: {}", e),
@@ -471,14 +483,46 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
             }
         }
 
+        DaemonRequest::SetCustomMatrix { colors, brightness } => {
+            st.stop_music();
+            let bri = brightness.unwrap_or(5);
+            for (i, c_str) in colors.iter().enumerate() {
+                if i < TOTAL_LEDS {
+                    if let Ok(c) = Color::from_str(c_str) {
+                        st.custom_matrix[i] = c;
+                    }
+                }
+            }
+            let matrix = st.custom_matrix;
+            match st.ensure_device() {
+                Ok(dev) => match dev.set_custom_matrix(&matrix, bri) {
+                    Ok(_) => DaemonResponse::Ok {
+                        message: "Custom matrix uploaded successfully".to_string(),
+                    },
+                    Err(e) => {
+                        st.device = None;
+                        DaemonResponse::Error {
+                            message: format!("Failed to upload custom matrix: {}", e),
+                        }
+                    }
+                },
+                Err(e) => DaemonResponse::Error {
+                    message: format!("Device not connected: {}", e),
+                },
+            }
+        }
+
         DaemonRequest::SetSleep { minutes } => match st.ensure_device() {
             Ok(dev) => match dev.set_sleep_timeout(minutes) {
                 Ok(_) => DaemonResponse::Ok {
                     message: format!("Set sleep timeout to {} min", minutes),
                 },
-                Err(e) => DaemonResponse::Error {
-                    message: format!("Failed to set sleep timeout: {}", e),
-                },
+                Err(e) => {
+                    st.device = None;
+                    DaemonResponse::Error {
+                        message: format!("Failed to set sleep timeout: {}", e),
+                    }
+                }
             },
             Err(e) => DaemonResponse::Error {
                 message: format!("Device not connected: {}", e),

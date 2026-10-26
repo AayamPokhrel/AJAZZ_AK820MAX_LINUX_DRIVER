@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 #[command(
     name = "ak820ctl",
     author = "Antigravity Systems Team",
-    version = "1.1.0",
+    version = "1.1.1",
     about = "Native Linux CLI control utility for Ajazz AK820 Max mechanical keyboards (Tri-Mode: Wired, 2.4G, Bluetooth)"
 )]
 struct Cli {
@@ -112,6 +112,10 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
+
     let cli = Cli::parse();
     let pref_mode = cli.mode.as_deref().and_then(HardwareConnection::from_str_case);
     let dev_override = cli.device.as_deref();

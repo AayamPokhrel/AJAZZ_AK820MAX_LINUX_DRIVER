@@ -48,6 +48,10 @@ pub enum DaemonRequest {
         key: String,
         color: String,
     },
+    SetCustomMatrix {
+        colors: Vec<String>,
+        brightness: Option<u8>,
+    },
     SetSleep {
         minutes: u8,
     },

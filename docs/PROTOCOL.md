@@ -57,25 +57,84 @@ Offset 4..7: Internal flags and CRC (e.g. 64 64 C9 6B)
 
 ---
 
-### 2.2 Wired USB Mode (`258A:010C`)
+### 2.2 Wired USB Mode (`258A:010C`) & 2.4G Mode (`3554:FA09`)
 
-Wired mode communicates exclusively via **HID Feature Reports** (`HIDIOCSFEATURE` / `HIDIOCGFEATURE`):
+Wired and 2.4G modes for firmware `Fw=24` communicate via **HID Feature Reports** exclusively using **Report ID 0x06** (520 bytes total).
+Reconstructed 1:1 from `OemDrv.exe` (v2.00) class `CDevG5KB`:
+- `CDevG5KB::AccessData` at `0x0048abe0`
+- `CDevG5KB::SetLED` at `0x0048b2d0`
+- `CDevG5KB::GetLED` at `0x0048b320`
+- `CDevG5KB::SetLedRgbTab` at `0x0048b970`
+- `CDevG5KB::GetLedRgbTab` at `0x0048b9c0`
+- `CDevG5KB::SetCfg` at `0x0048ae20`
+- `CDevG5KB::GetCfg` at `0x0048ae70`
+- `CDevG5KB::GetPassword` at `0x00487080` (Report ID 0x05, 6 bytes: `[0x05, 0x81, 0x02, 0x00, 0x01, 0x00]`)
 
-#### Effect Control (Feature Report 0x05 - 6 bytes)
+#### Universal 8-Byte Framing Header
+All 520-byte Feature Reports use the following header:
 ```
-Offset 0: 0x05 (Report ID)
-Offset 1: Hardware Effect Mode (1..20)
-Offset 2: Brightness (1..5)
-Offset 3: Speed (1..5)
-Offset 4: Direction (0 = Right, 1 = Left)
-Offset 5: Palette Color Index (0 = Red, 1 = Green, ..., 7 = Rainbow)
+Offset 0: 0x06 (HID Report ID)
+Offset 1: cmd (e.g. 0x04 SetLED, 0x84 GetLED, 0x0A SetLedRgbTab, 0x8A GetLedRgbTab, 0x03 SetCfg, 0x83 GetCfg)
+Offset 2: nOper (0x01 = Write, 0x02 = Read)
+Offset 3: 0x00
+Offset 4: total_chunks ((len + 511) / 512, normally 0x01)
+Offset 5: chunk_index (0x00)
+Offset 6: chunk_len & 0xFF
+Offset 7: (chunk_len >> 8) & 0xFF
+Offset 8..8+chunk_len: Payload data
+Offset 8+chunk_len..520: 0x00 padding
 ```
 
-#### Custom & Live RGB Matrix (Feature Report 0x06 - 520 bytes)
+#### Lighting Effects (cmd = 0x04 SetLED / 0x84 GetLED, 128 bytes payload)
 ```
-Offset 0:   0x06 (Report ID)
-Offset 1..324: 108 LEDs × 3 bytes RGB (R, G, B at LED Index)
-Offset 325..519: Zero padding / profile metadata
+payload[1]: Speed (0..4, where 0=slowest, 4=fastest)
+payload[2]: Brightness (0..4, where 0=dimmest, 4=brightest)
+payload[9]: 0x00
+payload[10]: Hardware Effect ID (1..21, 0 = Off)
+  1: Static
+  2: Breathing
+  3: Sine Wave
+  4: Spectrum (Rainbow Flow)
+  5: Ripple L-R
+  6: Ripple U-D
+  7: Starry
+  8: Ejection
+  9: Kaleidoscope
+  10: Cross
+  11: Reactive (Key Breathing)
+  12: Scroll
+  13: Top-Bottom
+  14: Rain
+  15: Windmill
+  16: Galloping
+  17: Music
+  18: Screen
+  21: Custom / Matrix Mode
+  0: Off
+
+Per-effect configuration table at 0x3a + (hw_id - 1) * 2:
+  byte 0: (direction << 7) | brightness  (direction: 0 = Right, 0x80 = Left)
+  byte 1: (speed << 4) | (palette_color_index & 0x0F)
+          (0 = Red, 1 = Orange, 2 = Yellow, 3 = Green, 4 = Cyan, 5 = Blue, 6 = Purple, 7 = Rainbow)
+
+Magic trailer:
+  payload[126]: 0x5A
+  payload[127]: 0xA5
+```
+
+#### Custom & Live Matrix Streaming (cmd = 0x0A SetLedRgbTab / 0x8A GetLedRgbTab, 512 bytes payload)
+```
+payload[0..323]: 108 RGB LEDs × 3 bytes (R at i*3, G at i*3+1, B at i*3+2)
+payload[324..509]: Zero padding
+payload[510]: 0x5A (Magic trailer byte 1)
+payload[511]: 0xA5 (Magic trailer byte 2)
+```
+
+#### Device Configuration & Sleep Timeout (cmd = 0x03 SetCfg / 0x83 GetCfg, 20 bytes payload)
+```
+payload[2..3]: Sleep timeout in seconds (u16 little-endian: 0=never, 300=5m, 900=15m, 1800=30m)
+payload[18]: 0x5A (Magic trailer byte 1)
+payload[19]: 0xA5 (Magic trailer byte 2)
 ```
 
 ---

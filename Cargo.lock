@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "ajazz-audio"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "ajazz-rgb",
  "cpal",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "ajazz-cli"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "ajazz-audio",
  "ajazz-hid",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "ajazz-daemon"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "ajazz-audio",
  "ajazz-hid",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "ajazz-hid"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "ajazz-rgb",
  "anyhow",
@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "ajazz-rgb"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "ajazz-tests"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "ajazz-audio",
  "ajazz-hid",
@@ -135,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "ak820-gui"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "ajazz-audio",
  "ajazz-hid",

@@ -1,7 +1,7 @@
 use crate::discovery::{enumerate_devices, ConnectionMode, DiscoveredDevice, ProtocolVariant};
 use crate::error::DeviceError;
 use crate::protocol::*;
-use crate::transport::{HidrawTransport, SimulatedTransport, Transport};
+use crate::transport::{HidrawTransport, Transport};
 use ajazz_rgb::color::Color;
 use ajazz_rgb::effects::EffectSettings;
 use ajazz_rgb::layout::TOTAL_LEDS;
@@ -23,11 +23,6 @@ impl AjazzDevice {
         preferred_mode: Option<ConnectionMode>,
         devnode_override: Option<&str>,
     ) -> Result<Self, DeviceError> {
-        if std::env::var("AJAZZ_SIMULATED").is_ok() {
-            info!("AJAZZ_SIMULATED set; using simulated in-memory keyboard");
-            return Ok(Self::open_simulated());
-        }
-
         let devs = enumerate_devices();
         if devs.is_empty() {
             return Err(DeviceError::NotFound(
@@ -79,7 +74,7 @@ impl AjazzDevice {
         for candidate in &devs {
             if candidate.connection_mode == ConnectionMode::Wired {
                 if let Ok(mut t) = HidrawTransport::open(&candidate.devnode) {
-                    // Test ping handshake
+                    // Test ping handshake via Report ID 5 GetPassword request
                     let ping = [0x05, 0x81, 0x00, 0x00, 0x00, 0x00];
                     if t.send_feature(&ping).is_ok() {
                         info!(
@@ -132,28 +127,6 @@ impl AjazzDevice {
         Self::open_with_preference(None, Some(path))
     }
 
-    pub fn open_simulated() -> Self {
-        let info = DiscoveredDevice {
-            name: "sim0".to_string(),
-            devnode: "/dev/simulated".to_string(),
-            vendor_id: 0x258A,
-            product_id: 0x010C,
-            bus_type: 3,
-            device_name: "Simulated Ajazz AK820 Max".to_string(),
-            interface: Some(1),
-            usage_pages: vec![0xFF00],
-            report_ids: vec![5, 6],
-            protocol: ProtocolVariant::ByComboWired,
-            connection_mode: ConnectionMode::Wired,
-            is_wired: true,
-        };
-
-        Self {
-            transport: Arc::new(Mutex::new(Box::new(SimulatedTransport::new()))),
-            device_info: info,
-        }
-    }
-
     pub fn info(&self) -> &DiscoveredDevice {
         &self.device_info
     }
@@ -187,17 +160,18 @@ impl AjazzDevice {
                     .ok_or_else(|| DeviceError::Protocol("invalid BY-COMBO wireless status".into()))
             }
             ProtocolVariant::ByComboWired => {
-                let req = [0x05, 0x81, 0x00, 0x00, 0x00, 0x00];
-                let _ = t.send_feature(&req);
-                std::thread::sleep(Duration::from_millis(15));
+                // Query current LED buffer via Report ID 6 to test hardware responsiveness
+                let req = bycombo_wired_get_led_request();
+                t.send_feature(&req)?;
+                std::thread::sleep(Duration::from_millis(20));
                 let mut buf = vec![0u8; 520];
-                let _ = t.get_feature(0x06, &mut buf);
+                t.get_feature(0x06, &mut buf)?;
 
                 Ok(DeviceStatus {
                     battery_percentage: Some(100),
                     power_state: PowerState::FullyCharged,
                     is_charging: true,
-                    raw: vec![0x06, 0x00, 0x03, 0x64],
+                    raw: buf,
                 })
             }
         }
@@ -217,7 +191,21 @@ impl AjazzDevice {
                 std::thread::sleep(Duration::from_millis(15));
             }
             ProtocolVariant::ByComboWired => {
-                let pkt = bycombo_wired_profile_packet(settings);
+                // 1. Fetch current 128-byte LED block
+                let get_req = bycombo_wired_get_led_request();
+                let mut current_buf = vec![0u8; 520];
+                if t.send_feature(&get_req).is_ok() {
+                    std::thread::sleep(Duration::from_millis(20));
+                    let _ = t.get_feature(0x06, &mut current_buf);
+                }
+
+                // 2. Build 1:1 vendor SetLED packet (520 bytes)
+                let payload_slice = if current_buf.len() >= 136 && current_buf[1] == 0x84 {
+                    Some(&current_buf[8..8 + 128])
+                } else {
+                    None
+                };
+                let pkt = bycombo_wired_set_led_packet(payload_slice, settings);
                 t.send_feature(&pkt)?;
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -243,15 +231,28 @@ impl AjazzDevice {
                 std::thread::sleep(Duration::from_millis(20));
             }
             ProtocolVariant::ByComboWired => {
-                let mut pkt = vec![0u8; 520];
-                pkt[0] = 0x06;
-                pkt[1] = 0x03;
-                pkt[2] = 0xB6;
-                pkt[12] = 0x01;
-                pkt[13] = 22; // Music mode
-                pkt[22] = 0xFF;
-                pkt[23] = 0xFF;
-                let _ = t.send_feature(&pkt);
+                // Switch to Custom / Matrix mode (hw 21)
+                let get_req = bycombo_wired_get_led_request();
+                let mut current_buf = vec![0u8; 520];
+                if t.send_feature(&get_req).is_ok() {
+                    std::thread::sleep(Duration::from_millis(20));
+                    let _ = t.get_feature(0x06, &mut current_buf);
+                }
+                let payload_slice = if current_buf.len() >= 136 && current_buf[1] == 0x84 {
+                    Some(&current_buf[8..8 + 128])
+                } else {
+                    None
+                };
+                let settings = EffectSettings {
+                    mode: ajazz_rgb::effects::EffectMode::Custom,
+                    brightness: 5,
+                    speed: 4,
+                    direction: ajazz_rgb::effects::Direction::Right,
+                    palette_color: ajazz_rgb::color::PaletteColor::Rainbow,
+                    custom_color: None,
+                };
+                let pkt = bycombo_wired_set_led_packet(payload_slice, &settings);
+                t.send_feature(&pkt)?;
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
@@ -271,14 +272,12 @@ impl AjazzDevice {
             ProtocolVariant::ByComboWireless => {
                 let packets = bycombo_rgb_packets(frame, BYCOMBO_CMD_STREAM);
                 for pkt in packets {
-                    let _ = t.write_packet(&pkt);
+                    t.write_packet(&pkt)?;
                 }
             }
             ProtocolVariant::ByComboWired => {
-                let chunks = bycombo_wired_matrix_packets(frame);
-                for chunk in chunks {
-                    let _ = t.send_feature(&chunk);
-                }
+                let pkt = bycombo_wired_matrix_packet(frame);
+                t.send_feature(&pkt)?;
             }
         }
         Ok(())
@@ -310,23 +309,33 @@ impl AjazzDevice {
                 }
             }
             ProtocolVariant::ByComboWired => {
-                // Set custom mode
-                let mut pkt = vec![0u8; 520];
-                pkt[0] = 0x06;
-                pkt[1] = 0x03;
-                pkt[2] = 0xB6;
-                pkt[12] = 0x01;
-                pkt[13] = 21; // Custom / Self-define mode
-                pkt[22] = 0xFF;
-                pkt[23] = 0xFF;
-                let _ = t.send_feature(&pkt);
-                std::thread::sleep(Duration::from_millis(15));
-
-                let chunks = bycombo_wired_matrix_packets(matrix);
-                for chunk in chunks {
-                    let _ = t.send_feature(&chunk);
-                    std::thread::sleep(Duration::from_millis(5));
+                // Switch to custom mode
+                let get_req = bycombo_wired_get_led_request();
+                let mut current_buf = vec![0u8; 520];
+                if t.send_feature(&get_req).is_ok() {
+                    std::thread::sleep(Duration::from_millis(20));
+                    let _ = t.get_feature(0x06, &mut current_buf);
                 }
+                let payload_slice = if current_buf.len() >= 136 && current_buf[1] == 0x84 {
+                    Some(&current_buf[8..8 + 128])
+                } else {
+                    None
+                };
+                let settings = EffectSettings {
+                    mode: ajazz_rgb::effects::EffectMode::Custom,
+                    brightness,
+                    speed: 4,
+                    direction: ajazz_rgb::effects::Direction::Right,
+                    palette_color: ajazz_rgb::color::PaletteColor::Rainbow,
+                    custom_color: None,
+                };
+                let mode_pkt = bycombo_wired_set_led_packet(payload_slice, &settings);
+                t.send_feature(&mode_pkt)?;
+                std::thread::sleep(Duration::from_millis(20));
+
+                let matrix_pkt = bycombo_wired_matrix_packet(matrix);
+                t.send_feature(&matrix_pkt)?;
+                std::thread::sleep(Duration::from_millis(20));
             }
         }
         info!("Per-key custom RGB matrix uploaded to keyboard");
@@ -347,13 +356,30 @@ impl AjazzDevice {
                 let pkt = build_shinetek_packet(CMD_SLEEP_TIME, &[idx]);
                 t.write_packet(&pkt)?;
             }
-            ProtocolVariant::ByComboWireless | ProtocolVariant::ByComboWired => {
+            ProtocolVariant::ByComboWireless => {
                 let payload = [0x0C, idx];
                 let pkt = build_bycombo_packet(BYCOMBO_REPORT_ID_OUT, 0x0C, 0, &payload);
-                let _ = t.write_packet(&pkt);
+                t.write_packet(&pkt)?;
+            }
+            ProtocolVariant::ByComboWired => {
+                let get_req = bycombo_wired_get_cfg_request();
+                let mut current_buf = vec![0u8; 520];
+                if t.send_feature(&get_req).is_ok() {
+                    std::thread::sleep(Duration::from_millis(20));
+                    let _ = t.get_feature(0x06, &mut current_buf);
+                }
+                let existing_cfg = if current_buf.len() >= 28 && current_buf[1] == 0x83 {
+                    Some(&current_buf[8..28])
+                } else {
+                    None
+                };
+                let set_pkt = bycombo_wired_set_cfg_packet(existing_cfg, minutes);
+                t.send_feature(&set_pkt)?;
+                std::thread::sleep(Duration::from_millis(20));
             }
         }
         info!("Set keyboard sleep timeout to {} min (index {})", minutes, idx);
         Ok(())
     }
 }
+

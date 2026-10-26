@@ -56,6 +56,10 @@ impl HidrawTransport {
     }
 }
 
+fn to_hex_dump(data: &[u8]) -> String {
+    data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
+}
+
 impl Transport for HidrawTransport {
     fn write_packet(&mut self, pkt: &[u8]) -> Result<(), DeviceError> {
         use std::io::Write;
@@ -64,8 +68,12 @@ impl Transport for HidrawTransport {
             if e.kind() == std::io::ErrorKind::BrokenPipe {
                 DeviceError::Disconnected
             } else {
-                DeviceError::Io {
+                DeviceError::HardwareIo {
+                    syscall: "write",
                     path: self.path.clone(),
+                    report_id: pkt.first().copied().unwrap_or(0),
+                    len: pkt.len(),
+                    hex_dump: to_hex_dump(&pkt[..pkt.len().min(32)]),
                     source: e,
                 }
             }
@@ -98,8 +106,12 @@ impl Transport for HidrawTransport {
                 Ok(Some(buf))
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-            Err(e) => Err(DeviceError::Io {
+            Err(e) => Err(DeviceError::HardwareIo {
+                syscall: "read",
                 path: self.path.clone(),
+                report_id: 0,
+                len: 512,
+                hex_dump: String::new(),
                 source: e,
             }),
         }
@@ -113,8 +125,12 @@ impl Transport for HidrawTransport {
         let res = unsafe { libc::ioctl(fd, req, data.as_ptr()) };
         if res < 0 {
             let err = std::io::Error::last_os_error();
-            return Err(DeviceError::Io {
+            return Err(DeviceError::HardwareIo {
+                syscall: "HIDIOCSFEATURE",
                 path: self.path.clone(),
+                report_id: data.first().copied().unwrap_or(0),
+                len: data.len(),
+                hex_dump: to_hex_dump(&data[..data.len().min(32)]),
                 source: err,
             });
         }
@@ -133,8 +149,12 @@ impl Transport for HidrawTransport {
         let res = unsafe { libc::ioctl(fd, req, buf.as_mut_ptr()) };
         if res < 0 {
             let err = std::io::Error::last_os_error();
-            return Err(DeviceError::Io {
+            return Err(DeviceError::HardwareIo {
+                syscall: "HIDIOCGFEATURE",
                 path: self.path.clone(),
+                report_id,
+                len: buf.len(),
+                hex_dump: to_hex_dump(&buf[..buf.len().min(32)]),
                 source: err,
             });
         }
@@ -142,61 +162,3 @@ impl Transport for HidrawTransport {
     }
 }
 
-/// In-memory simulated keyboard transport for unit testing and CI environments.
-pub struct SimulatedTransport {
-    pub written: Vec<Vec<u8>>,
-    pub sent_features: Vec<Vec<u8>>,
-    pub battery_level: u8,
-    pub is_charging: bool,
-}
-
-impl Default for SimulatedTransport {
-    fn default() -> Self {
-        Self {
-            written: Vec::new(),
-            sent_features: Vec::new(),
-            battery_level: 95,
-            is_charging: true,
-        }
-    }
-}
-
-impl SimulatedTransport {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl Transport for SimulatedTransport {
-    fn write_packet(&mut self, pkt: &[u8]) -> Result<(), DeviceError> {
-        self.written.push(pkt.to_vec());
-        Ok(())
-    }
-
-    fn read_packet(&mut self, _timeout: Duration) -> Result<Option<Vec<u8>>, DeviceError> {
-        // Return simulated status packet (Shinetek 64-byte reply)
-        let mut resp = vec![0u8; 64];
-        resp[0..4].copy_from_slice(&[0xAA, 0x55, 0xCC, 0x33]);
-        resp[4] = 0x0E;
-        resp[5] = self.battery_level;
-        resp[6] = if self.is_charging { 1 } else { 2 };
-        Ok(Some(resp))
-    }
-
-    fn send_feature(&mut self, data: &[u8]) -> Result<(), DeviceError> {
-        self.sent_features.push(data.to_vec());
-        Ok(())
-    }
-
-    fn get_feature(&mut self, report_id: u8, buf: &mut [u8]) -> Result<(), DeviceError> {
-        if report_id == 0x06 && buf.len() >= 8 {
-            buf[0] = 0x06;
-            buf[1] = 0x00;
-            buf[2] = if self.is_charging { 0x01 } else { 0x02 };
-            buf[3] = self.battery_level;
-            buf[4] = self.battery_level;
-            buf[5] = self.battery_level;
-        }
-        Ok(())
-    }
-}
