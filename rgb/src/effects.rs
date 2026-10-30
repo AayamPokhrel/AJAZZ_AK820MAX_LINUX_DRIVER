@@ -159,14 +159,14 @@ impl EffectMode {
             "off" | "none" | "lightsoff" => Some(Self::Off),
 
             // Interactive typing modes
-            "typingsplash" | "splash" | "randomgradient" | "gradientsplash" => Some(Self::TypingSplash),
-            "typingroulette" | "roulette" | "chaos" | "chaosfx" => Some(Self::TypingRoulette),
-            "typingshockwave" | "shockwave" => Some(Self::TypingShockwave),
-            "typingheatmap" | "heatmap" | "thermal" | "fire" => Some(Self::TypingHeatmap),
-            "typingmatrix" | "matrix" | "coderain" => Some(Self::TypingMatrix),
-            "typinglaser" | "laser" | "crossfire" => Some(Self::TypingLaser),
-            "typingsparks" | "sparks" | "starlight" => Some(Self::TypingSparks),
-            "typingaurora" | "aurora" => Some(Self::TypingAurora),
+            "typingsplash" | "splash" | "randomgradient" | "gradientsplash" | "randomgradientsplash" => Some(Self::TypingSplash),
+            "typingroulette" | "roulette" | "chaos" | "chaosfx" | "chaosroulette" => Some(Self::TypingRoulette),
+            "typingshockwave" | "shockwave" | "shockwaveripple" | "neonshockwave" => Some(Self::TypingShockwave),
+            "typingheatmap" | "heatmap" | "thermal" | "fire" | "thermalheatmap" => Some(Self::TypingHeatmap),
+            "typingmatrix" | "matrix" | "coderain" | "matrixcoderain" => Some(Self::TypingMatrix),
+            "typinglaser" | "laser" | "crossfire" | "crossfirelaser" | "lasers" => Some(Self::TypingLaser),
+            "typingsparks" | "sparks" | "starlight" | "starlightsparks" => Some(Self::TypingSparks),
+            "typingaurora" | "aurora" | "cosmicaurora" => Some(Self::TypingAurora),
             _ => None,
         }
     }
