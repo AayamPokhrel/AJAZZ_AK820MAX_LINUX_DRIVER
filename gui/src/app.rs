@@ -66,6 +66,7 @@ impl eframe::App for Ak820App {
             self.last_status_poll = Instant::now();
             self.coordinator.refresh();
         }
+        self.coordinator.sync();
 
         // Render live preview frame based on current effect
         let preview_frame = FrameRenderer::render(
@@ -77,8 +78,8 @@ impl eframe::App for Ak820App {
 
         // Fetch audio levels if music visualizer is active
         let audio_state = self.audio_worker.state();
-        let audio_levels_opt = if audio_state.is_active {
-            Some(&audio_state.levels)
+        let audio_levels_opt: Option<&[f32]> = if audio_state.is_active {
+            Some(audio_state.levels.as_slice())
         } else {
             None
         };

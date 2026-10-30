@@ -1,4 +1,5 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use libpulse_binding::def::BufferAttr;
 use libpulse_binding::sample::{Format, Spec};
 use libpulse_binding::stream::Direction;
 use libpulse_simple_binding::Simple;
@@ -109,6 +110,15 @@ impl AudioCapture {
             return Err(AudioError::Pulse("Invalid sample spec for PulseAudio".into()));
         }
 
+        // Configure ultra-low-latency buffer attributes (~11.6ms fragment size, small max buffer)
+        let buffer_attr = BufferAttr {
+            maxlength: 2048 * 2, // ~46ms max buffer length
+            tlength: u32::MAX,
+            prebuf: u32::MAX,
+            minreq: u32::MAX,
+            fragsize: 512 * 2, // ~11.6ms low-latency fragment
+        };
+
         let dev_str = device_name.unwrap_or("@DEFAULT_MONITOR@");
         let simple = Simple::new(
             None,
@@ -118,11 +128,11 @@ impl AudioCapture {
             "Desktop System Audio Loopback",
             &spec,
             None,
-            None,
+            Some(&buffer_attr),
         )
         .map_err(|e| AudioError::Pulse(format!("Simple::new error: {}", e)))?;
 
-        let sample_buffer = Arc::new(Mutex::new(Vec::with_capacity(16384)));
+        let sample_buffer = Arc::new(Mutex::new(Vec::with_capacity(4096)));
         let buf_clone = Arc::clone(&sample_buffer);
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = Arc::clone(&running);
@@ -131,7 +141,6 @@ impl AudioCapture {
             .name("ajazz-pulse-loopback".into())
             .spawn(move || {
                 let mut chunk = [0i16; 512];
-                // Convert chunk to u8 slice for read
                 let byte_len = chunk.len() * 2;
                 while running_clone.load(Ordering::Relaxed) {
                     let slice = unsafe {
@@ -143,14 +152,15 @@ impl AudioCapture {
                             for &s in &chunk {
                                 buf.push(s as f32 / 32768.0);
                             }
-                            if buf.len() > 32768 {
-                                let drain_len = buf.len() - 16384;
+                            // Ring buffer drain: keep strictly fresh window, avoid memory accumulation
+                            if buf.len() > 4096 {
+                                let drain_len = buf.len() - 2048;
                                 buf.drain(0..drain_len);
                             }
                         }
                         Err(e) => {
                             error!("PulseAudio loopback read error: {}", e);
-                            thread::sleep(std::time::Duration::from_millis(50));
+                            thread::sleep(std::time::Duration::from_millis(15));
                         }
                     }
                 }
@@ -320,13 +330,17 @@ impl AudioCapture {
         &self.source_name
     }
 
-    /// Read the latest `count` samples from the capture buffer.
+    /// Read the latest `count` samples from the capture buffer and drain older backlog.
     pub fn read_latest(&self, count: usize) -> Vec<f32> {
-        let buf = self.sample_buffer.lock().unwrap();
+        let mut buf = self.sample_buffer.lock().unwrap();
         if buf.len() <= count {
             buf.clone()
         } else {
-            buf[buf.len() - count..].to_vec()
+            let start = buf.len() - count;
+            let res = buf[start..].to_vec();
+            // Discard older queued audio chunks to ensure ZERO backlog
+            buf.drain(0..start);
+            res
         }
     }
 }

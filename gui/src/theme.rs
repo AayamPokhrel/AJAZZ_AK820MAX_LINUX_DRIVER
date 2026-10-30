@@ -35,18 +35,24 @@ impl ThemeColors {
     pub const STATUS_WARNING: Color32 = Color32::from_rgb(245, 158, 11);
     pub const STATUS_ERROR: Color32 = Color32::from_rgb(239, 68, 68);
 
-    // Audio Visualizer Gradient (10 Bands)
-    pub const EQUALIZER_GRADIENT: [Color32; 10] = [
-        Color32::from_rgb(0, 242, 254),   // 40 Hz (Sub-bass / Cyan)
-        Color32::from_rgb(14, 215, 255),  // 80 Hz
-        Color32::from_rgb(67, 180, 255),  // 160 Hz (Bass)
-        Color32::from_rgb(125, 130, 255), // 320 Hz (Low mids)
-        Color32::from_rgb(168, 85, 247),  // 640 Hz (Mids / Purple)
-        Color32::from_rgb(200, 75, 225),  // 1.2 kHz
-        Color32::from_rgb(230, 65, 175),  // 2.5 kHz (Upper mids)
-        Color32::from_rgb(244, 63, 140),  // 5 kHz (Presence)
-        Color32::from_rgb(244, 63, 94),   // 10 kHz (Brilliance / Pink)
-        Color32::from_rgb(255, 75, 75),   // 16 kHz (Air / Red-Pink)
+    // Audio Visualizer Gradient (16 Bands)
+    pub const EQUALIZER_GRADIENT: [Color32; 16] = [
+        Color32::from_rgb(0, 242, 254),   // 30 Hz (Sub-bass / Cyan)
+        Color32::from_rgb(10, 225, 255),  // 60 Hz
+        Color32::from_rgb(30, 205, 255),  // 110 Hz
+        Color32::from_rgb(60, 180, 255),  // 180 Hz (Bass)
+        Color32::from_rgb(95, 155, 255),  // 280 Hz
+        Color32::from_rgb(130, 130, 255), // 450 Hz (Low mids)
+        Color32::from_rgb(155, 105, 255), // 700 Hz
+        Color32::from_rgb(168, 85, 247),  // 1.1 kHz (Mids / Purple)
+        Color32::from_rgb(190, 75, 235),  // 1.8 kHz
+        Color32::from_rgb(215, 68, 205),  // 2.8 kHz
+        Color32::from_rgb(235, 65, 170),  // 4.2 kHz (Presence)
+        Color32::from_rgb(244, 63, 140),  // 6 kHz
+        Color32::from_rgb(244, 63, 110),  // 8.5 kHz
+        Color32::from_rgb(244, 63, 94),   // 11.5 kHz (Brilliance / Pink)
+        Color32::from_rgb(255, 70, 80),   // 14 kHz
+        Color32::from_rgb(255, 90, 60),   // 18 kHz (Air / Red-Orange)
     ];
 }
 

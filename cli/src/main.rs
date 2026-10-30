@@ -79,18 +79,26 @@ enum Commands {
 
     #[command(about = "Start audio-reactive music RGB visualization (Desktop Audio Loopback by default)")]
     Music {
-        #[arg(short, long, default_value = "spectrum", help = "Style: spectrum, pulse, wave, soft-dance, passion")]
+        #[arg(short, long, default_value = "spectrum", help = "Style: spectrum, pulse, wave, passion, matrix")]
         style: String,
         #[arg(short, long, help = "Optional custom color tint (hex or name)")]
         color: Option<String>,
-        #[arg(short, long, help = "Color palette: classic, cyberpunk, thermal, oceanic, custom")]
+        #[arg(short, long, help = "Color palette: classic, cyberpunk, thermal, oceanic")]
         palette: Option<String>,
-        #[arg(short, long, default_value_t = 30, help = "Target FPS (10..=60)")]
+        #[arg(long, help = "Dynamic color mode: classic, cyberpunk, thermal, oceanic, beat, cycle, mosaic, horizontalzone, verticalzone, radialzone, diagonalzone")]
+        color_mode: Option<String>,
+        #[arg(short, long, default_value_t = 60, help = "Target FPS (10..=90)")]
         fps: u32,
         #[arg(long, default_value_t = 1.2, help = "Audio sensitivity multiplier factor (0.1..=5.0)")]
         sensitivity: f32,
-        #[arg(long, default_value_t = 0.05, help = "Noise gate threshold to suppress background hum (0.0..=0.5)")]
+        #[arg(long, default_value_t = 0.04, help = "Noise gate threshold to suppress background hum (0.0..=0.40)")]
         noise_gate: f32,
+        #[arg(long, default_value_t = 2.8, help = "Decay ballistics speed (1.0..=6.0)")]
+        decay: f32,
+        #[arg(long, default_value_t = true, help = "Hold peak indicator ticks")]
+        peak_hold: bool,
+        #[arg(long, default_value_t = 1.5, help = "Morph speed for random zone gradients (0.1..=5.0)")]
+        morph_speed: f32,
         #[arg(long, default_value = "system", help = "Audio source: system (desktop audio loopback), mic (microphone), or custom device name")]
         source: String,
         #[arg(long, help = "Send to background daemon instead of running in foreground")]
@@ -111,9 +119,9 @@ enum Commands {
         minutes: u8,
     },
 
-    #[command(about = "Interact with the background daemon (status, stop)")]
+    #[command(about = "Interact with the background daemon (status, stop, shuffle-zones, reroll-mosaic)")]
     Daemon {
-        #[arg(help = "Action: ping, status, stop-music, shutdown")]
+        #[arg(help = "Action: ping, status, stop-music, shuffle-zones, reroll-mosaic, shutdown")]
         action: String,
     },
 }
@@ -330,9 +338,13 @@ async fn main() -> anyhow::Result<()> {
             style,
             color,
             palette,
+            color_mode,
             fps,
             sensitivity,
             noise_gate,
+            decay,
+            peak_hold,
+            morph_speed,
             source,
             daemon,
         } => {
@@ -341,10 +353,14 @@ async fn main() -> anyhow::Result<()> {
                     style: style.clone(),
                     color: color.clone(),
                     palette: palette.clone(),
+                    color_mode: color_mode.clone(),
                     sensitivity: Some(sensitivity),
                     noise_gate: Some(noise_gate),
+                    decay: Some(decay),
+                    peak_hold: Some(peak_hold),
                     source: Some(source.clone()),
                     fps: Some(fps),
+                    morph_speed: Some(morph_speed),
                 };
                 match try_daemon_request(req).await {
                     Ok(DaemonResponse::Ok { message }) => println!("{} {}", "Success:".green().bold(), message),
@@ -358,22 +374,25 @@ async fn main() -> anyhow::Result<()> {
             let vis_style = VisualizerStyle::from_name(&style)
                 .ok_or_else(|| anyhow::anyhow!("Unknown visualizer style '{}'", style))?;
 
-            let color_palette = if let Some(ref p_name) = palette {
-                ColorPalette::from_name(p_name).unwrap_or(ColorPalette::StockClassic)
+            let parsed_color_mode = if let Some(ref cm_str) = color_mode {
+                ajazz_audio::visualizer::ColorMode::from_name(cm_str)
+                    .unwrap_or(ajazz_audio::visualizer::ColorMode::Palette(ColorPalette::StockClassic))
+            } else if let Some(ref p_name) = palette {
+                ajazz_audio::visualizer::ColorMode::Palette(
+                    ColorPalette::from_name(p_name).unwrap_or(ColorPalette::StockClassic),
+                )
             } else if let Some(ref c_str) = color {
                 if let Ok(c) = Color::from_str(c_str) {
-                    ColorPalette::CustomGradient {
+                    ajazz_audio::visualizer::ColorMode::CustomGradient {
                         base: c.scale(0.3),
                         peak: c,
                     }
                 } else {
-                    ColorPalette::StockClassic
+                    ajazz_audio::visualizer::ColorMode::Palette(ColorPalette::StockClassic)
                 }
             } else {
-                ColorPalette::StockClassic
+                ajazz_audio::visualizer::ColorMode::Palette(ColorPalette::StockClassic)
             };
-
-            let custom_tint = color.and_then(|c| Color::from_str(&c).ok());
 
             let audio_src = match source.to_lowercase().as_str() {
                 "mic" | "microphone" => AudioSource::Microphone,
@@ -383,10 +402,10 @@ async fn main() -> anyhow::Result<()> {
 
             // Foreground visualization
             println!(
-                "{} Starting interactive foreground music visualization ({}, palette: {:?}, source: {:?})",
+                "{} Starting interactive foreground music visualization ({}, mode: {}, source: {:?})",
                 "Music Studio:".magenta().bold(),
                 style.cyan(),
-                color_palette,
+                parsed_color_mode.name().yellow(),
                 audio_src
             );
 
@@ -399,11 +418,23 @@ async fn main() -> anyhow::Result<()> {
 
             let mut analyzer = SpectrumAnalyzer::new(capture.sample_rate(), sensitivity);
             analyzer.set_noise_gate(noise_gate);
-            let mut renderer = MusicRenderer::new(vis_style, custom_tint);
-            renderer.set_palette(color_palette);
+            analyzer.set_decay_speed(decay);
+            analyzer.set_peak_hold(peak_hold);
 
-            let target_fps = fps.clamp(10, 60);
-            let frame_dur = Duration::from_micros((1_000_000 / target_fps as u64).max(16_666));
+            let config = ajazz_audio::visualizer::VisualizerConfig {
+                style: vis_style,
+                color_mode: parsed_color_mode,
+                sensitivity,
+                noise_gate,
+                decay_speed: decay,
+                peak_hold,
+                fps,
+                morph_speed,
+            };
+            let mut renderer = MusicRenderer::with_config(config);
+
+            let target_fps = fps.clamp(10, 90);
+            let frame_dur = Duration::from_micros((1_000_000 / target_fps as u64).max(11_111));
 
             println!("Streaming to keyboard at ~{} FPS. Press Ctrl+C to stop.", target_fps);
 
@@ -427,7 +458,7 @@ async fn main() -> anyhow::Result<()> {
                 if last_meter_print.elapsed() >= Duration::from_millis(100) {
                     last_meter_print = Instant::now();
                     let levels = analyzer.levels();
-                    let mut bar_str = String::from("\r[AUDIO] ");
+                    let mut bar_str = String::from("\r[16-BAND] ");
                     for l in levels.iter() {
                         let blocks = (l * 8.0).round() as usize;
                         let ch = match blocks {
@@ -443,7 +474,8 @@ async fn main() -> anyhow::Result<()> {
                         };
                         bar_str.push(ch);
                     }
-                    bar_str.push_str(&format!("  Bass: {:.0}%", analyzer.bass * 100.0));
+                    let beat_str = if analyzer.beat_detected { " [⚡ BEAT]" } else { "         " };
+                    bar_str.push_str(&format!("  Bass: {:3.0}%{}", analyzer.bass * 100.0, beat_str));
                     eprint!("{}", bar_str);
                 }
 
@@ -505,12 +537,24 @@ async fn main() -> anyhow::Result<()> {
                 Ok(DaemonResponse::Ok { message }) => println!("{} {}", "Success:".green().bold(), message),
                 _ => eprintln!("{}", "Failed to stop music or daemon unreachable".red()),
             },
+            "shuffle-zones" => match try_daemon_request(DaemonRequest::ShuffleMusicZones).await {
+                Ok(DaemonResponse::Ok { message }) => println!("{} {}", "Success:".green().bold(), message),
+                _ => eprintln!("{}", "Failed to shuffle zones or daemon unreachable".red()),
+            },
+            "reroll-mosaic" => match try_daemon_request(DaemonRequest::RerollMusicMosaic).await {
+                Ok(DaemonResponse::Ok { message }) => println!("{} {}", "Success:".green().bold(), message),
+                _ => eprintln!("{}", "Failed to reroll mosaic or daemon unreachable".red()),
+            },
             "shutdown" => match try_daemon_request(DaemonRequest::Shutdown).await {
                 Ok(_) => println!("{}", "Daemon shutdown requested".yellow()),
                 _ => println!("{}", "Daemon already offline".yellow()),
             },
-            other => eprintln!("Unknown action '{}'. Valid actions: ping, status, stop-music, shutdown", other),
+            other => eprintln!(
+                "Unknown action '{}'. Valid actions: ping, status, stop-music, shuffle-zones, reroll-mosaic, shutdown",
+                other
+            ),
         },
+
     }
 
     Ok(())

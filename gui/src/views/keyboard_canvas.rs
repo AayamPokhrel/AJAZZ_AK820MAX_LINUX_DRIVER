@@ -94,7 +94,7 @@ pub fn render_keyboard_canvas(
     ui: &mut Ui,
     state: &mut KeyboardCanvasState,
     preview_frame: &[Color; TOTAL_LEDS],
-    audio_levels: Option<&[f32; 10]>,
+    audio_levels: Option<&[f32]>,
     is_custom_mode: bool,
 ) {
     ui.vertical(|ui| {

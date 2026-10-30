@@ -1,3 +1,4 @@
+use ajazz_audio::visualizer::ColorMode;
 use ajazz_hid::{enumerate_devices, AjazzDevice, DeviceStatus, DiscoveredDevice, HardwareConnection};
 use ajazz_rgb::color::Color;
 use ajazz_rgb::effects::{EffectMode, EffectSettings};
@@ -5,6 +6,7 @@ use ajazz_rgb::layout::TOTAL_LEDS;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -45,12 +47,18 @@ pub enum DaemonRequest {
         style: String,
         color: Option<String>,
         palette: Option<String>,
+        color_mode: Option<String>,
         sensitivity: Option<f32>,
         noise_gate: Option<f32>,
+        decay: Option<f32>,
+        peak_hold: Option<bool>,
         source: Option<String>,
         fps: Option<u32>,
+        morph_speed: Option<f32>,
     },
     StopMusic,
+    ShuffleMusicZones,
+    RerollMusicMosaic,
     SetCustomKey {
         key: String,
         color: String,
@@ -107,7 +115,28 @@ pub enum ConnectionMode {
     Disconnected,
 }
 
-/// Unified hardware manager for the GUI.
+#[derive(Clone)]
+pub struct CoordinatorSharedState {
+    pub mode: ConnectionMode,
+    pub status: Option<DeviceStatus>,
+    pub device_info: Option<DiscoveredDevice>,
+    pub available_devices: Vec<DiscoveredDevice>,
+    pub preferred_connection: Option<HardwareConnection>,
+    pub last_error: Option<String>,
+    pub direct_device: Option<Arc<AjazzDevice>>,
+}
+
+enum CoordinatorCmd {
+    Refresh { preferred: Option<HardwareConnection> },
+    SetHardwareMode(Option<HardwareConnection>),
+    DaemonReq(DaemonRequest),
+    DirectSetLighting(EffectSettings),
+    DirectSetCustomMatrix([Color; TOTAL_LEDS], u8),
+    DirectSetSleep(u8),
+    DirectEnterMusic,
+}
+
+/// Unified, non-blocking hardware manager for the GUI.
 pub struct HardwareCoordinator {
     pub mode: ConnectionMode,
     pub status: Option<DeviceStatus>,
@@ -117,20 +146,194 @@ pub struct HardwareCoordinator {
     pub last_error: Option<String>,
     direct_device: Option<Arc<AjazzDevice>>,
     custom_matrix: [Color; TOTAL_LEDS],
+    shared: Arc<parking_lot::RwLock<CoordinatorSharedState>>,
+    cmd_tx: std::sync::mpsc::Sender<CoordinatorCmd>,
 }
 
 impl HardwareCoordinator {
     pub fn new() -> Self {
+        // Enumerate local physical devices for immediate startup display
+        let devs = enumerate_devices();
+        let initial_info = devs.first().cloned();
+
+        let initial_shared = CoordinatorSharedState {
+            mode: ConnectionMode::Disconnected,
+            status: None,
+            device_info: initial_info.clone(),
+            available_devices: devs.clone(),
+            preferred_connection: None,
+            last_error: None,
+            direct_device: None,
+        };
+
+        let shared = Arc::new(parking_lot::RwLock::new(initial_shared));
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<CoordinatorCmd>();
+
+        let shared_bg = Arc::clone(&shared);
+        thread::Builder::new()
+            .name("coord-bg".into())
+            .spawn(move || {
+                let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                    Ok(r) => r,
+                    Err(_) => return,
+                };
+
+                while let Ok(cmd) = cmd_rx.recv() {
+                    match cmd {
+                        CoordinatorCmd::Refresh { preferred } => {
+                            let devs = enumerate_devices();
+                            // 1. Try daemon first
+                            let res = rt.block_on(send_daemon_request(DaemonRequest::GetStatus));
+                            if let Ok(DaemonResponse::Status(st)) = res {
+                                let mut s = shared_bg.write();
+                                s.mode = ConnectionMode::ConnectedDaemon;
+                                s.status = Some(st);
+                                s.available_devices = devs.clone();
+                                s.direct_device = None;
+                                s.last_error = None;
+                                if let Some(pref) = preferred {
+                                    s.device_info = devs.into_iter().find(|d| d.connection_mode == pref);
+                                } else {
+                                    s.device_info = devs.into_iter().next();
+                                }
+                                continue;
+                            }
+
+                            // 2. Fallback to direct HID
+                            match AjazzDevice::open_with_preference(preferred, None) {
+                                Ok(dev) => {
+                                    let st = dev.status().ok();
+                                    let info = dev.info().clone();
+                                    let mut s = shared_bg.write();
+                                    s.mode = ConnectionMode::ConnectedDirectHid;
+                                    s.status = st;
+                                    s.device_info = Some(info);
+                                    s.available_devices = devs;
+                                    s.direct_device = Some(Arc::new(dev));
+                                    s.last_error = None;
+                                }
+                                Err(e) => {
+                                    let mut s = shared_bg.write();
+                                    s.mode = ConnectionMode::Disconnected;
+                                    s.status = None;
+                                    s.device_info = None;
+                                    s.available_devices = devs;
+                                    s.direct_device = None;
+                                    s.last_error = Some(format!("No AK820 Max device accessible: {}", e));
+                                }
+                            }
+                        }
+                        CoordinatorCmd::SetHardwareMode(pref) => {
+                            let mode_str = match pref {
+                                Some(HardwareConnection::Wired) => "wired",
+                                Some(HardwareConnection::Wireless24G) => "2.4g",
+                                Some(HardwareConnection::Bluetooth) => "bluetooth",
+                                _ => "auto",
+                            };
+                            let _ = rt.block_on(send_daemon_request(DaemonRequest::SetMode {
+                                mode: mode_str.to_string(),
+                                device: None,
+                            }));
+
+                            // Re-probe status
+                            let devs = enumerate_devices();
+                            let res = rt.block_on(send_daemon_request(DaemonRequest::GetStatus));
+                            if let Ok(DaemonResponse::Status(st)) = res {
+                                let mut s = shared_bg.write();
+                                s.mode = ConnectionMode::ConnectedDaemon;
+                                s.status = Some(st);
+                                s.available_devices = devs.clone();
+                                s.direct_device = None;
+                                s.last_error = None;
+                                if let Some(p) = pref {
+                                    s.device_info = devs.into_iter().find(|d| d.connection_mode == p);
+                                } else {
+                                    s.device_info = devs.into_iter().next();
+                                }
+                            } else {
+                                match AjazzDevice::open_with_preference(pref, None) {
+                                    Ok(dev) => {
+                                        let st = dev.status().ok();
+                                        let info = dev.info().clone();
+                                        let mut s = shared_bg.write();
+                                        s.mode = ConnectionMode::ConnectedDirectHid;
+                                        s.status = st;
+                                        s.device_info = Some(info);
+                                        s.available_devices = devs;
+                                        s.direct_device = Some(Arc::new(dev));
+                                        s.last_error = None;
+                                    }
+                                    Err(e) => {
+                                        let mut s = shared_bg.write();
+                                        s.mode = ConnectionMode::Disconnected;
+                                        s.status = None;
+                                        s.device_info = None;
+                                        s.available_devices = devs;
+                                        s.direct_device = None;
+                                        s.last_error = Some(format!("No AK820 Max device accessible: {}", e));
+                                    }
+                                }
+                            }
+                        }
+                        CoordinatorCmd::DaemonReq(req) => {
+                            let _ = rt.block_on(send_daemon_request(req));
+                        }
+                        CoordinatorCmd::DirectSetLighting(settings) => {
+                            let dev_opt = shared_bg.read().direct_device.clone();
+                            if let Some(dev) = dev_opt {
+                                let _ = dev.set_lighting(&settings);
+                            }
+                        }
+                        CoordinatorCmd::DirectSetCustomMatrix(matrix, brightness) => {
+                            let dev_opt = shared_bg.read().direct_device.clone();
+                            if let Some(dev) = dev_opt {
+                                let _ = dev.set_custom_matrix(&matrix, brightness);
+                            }
+                        }
+                        CoordinatorCmd::DirectSetSleep(mins) => {
+                            let dev_opt = shared_bg.read().direct_device.clone();
+                            if let Some(dev) = dev_opt {
+                                let _ = dev.set_sleep_timeout(mins);
+                            }
+                        }
+                        CoordinatorCmd::DirectEnterMusic => {
+                            let dev_opt = shared_bg.read().direct_device.clone();
+                            if let Some(dev) = dev_opt {
+                                let _ = dev.enter_live_music_mode();
+                            }
+                        }
+                    }
+                }
+            })
+            .ok();
+
+        // Trigger initial background refresh immediately
+        let _ = cmd_tx.send(CoordinatorCmd::Refresh { preferred: None });
+
         Self {
             mode: ConnectionMode::Disconnected,
             status: None,
-            device_info: None,
-            available_devices: Vec::new(),
+            device_info: initial_info,
+            available_devices: devs,
             preferred_connection: None,
             last_error: None,
             direct_device: None,
             custom_matrix: [Color::BLACK; TOTAL_LEDS],
+            shared,
+            cmd_tx,
         }
+    }
+
+    /// Synchronize local GUI cached fields with background worker state without blocking
+    pub fn sync(&mut self) {
+        let s = self.shared.read();
+        self.mode = s.mode.clone();
+        self.status = s.status.clone();
+        self.device_info = s.device_info.clone();
+        self.available_devices = s.available_devices.clone();
+        self.preferred_connection = s.preferred_connection;
+        self.last_error = s.last_error.clone();
+        self.direct_device = s.direct_device.clone();
     }
 
     pub fn direct_device(&self) -> Option<Arc<AjazzDevice>> {
@@ -140,81 +343,19 @@ impl HardwareCoordinator {
     /// Set preferred hardware connection (Wired, 2.4G, Bluetooth, or None for Auto)
     pub fn set_hardware_mode(&mut self, pref: Option<HardwareConnection>) {
         self.preferred_connection = pref;
-        let mode_str = match pref {
-            Some(HardwareConnection::Wired) => "wired",
-            Some(HardwareConnection::Wireless24G) => "2.4g",
-            Some(HardwareConnection::Bluetooth) => "bluetooth",
-            _ => "auto",
-        };
-
-        // Notify daemon if running
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build();
-        if let Ok(rt) = rt {
-            let _ = rt.block_on(async {
-                send_daemon_request(DaemonRequest::SetMode {
-                    mode: mode_str.to_string(),
-                    device: None,
-                })
-                .await
-            });
-        }
-
-        self.refresh();
+        let _ = self.cmd_tx.send(CoordinatorCmd::SetHardwareMode(pref));
+        self.sync();
     }
 
-    /// Refresh connection status: try daemon first, fallback to direct HID.
+    /// Refresh connection status asynchronously without stalling GUI render loop
     pub fn refresh(&mut self) {
-        // Enumerate local physical devices for device_info
-        let devs = enumerate_devices();
-        self.available_devices = devs.clone();
-
-        // 1. Try daemon IPC
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build();
-
-        if let Ok(rt) = rt {
-            let res = rt.block_on(async {
-                send_daemon_request(DaemonRequest::GetStatus).await
-            });
-
-            if let Ok(DaemonResponse::Status(st)) = res {
-                self.mode = ConnectionMode::ConnectedDaemon;
-                self.status = Some(st);
-                self.last_error = None;
-                self.direct_device = None;
-
-                // Set device_info matching preference if available
-                if let Some(pref) = self.preferred_connection {
-                    self.device_info = devs.into_iter().find(|d| d.connection_mode == pref);
-                } else {
-                    self.device_info = devs.into_iter().next();
-                }
-                return;
-            }
-        }
-
-        // 2. Fallback to Direct HID
-        match AjazzDevice::open_with_preference(self.preferred_connection, None) {
-            Ok(dev) => {
-                let st = dev.status().ok();
-                self.device_info = Some(dev.info().clone());
-                self.status = st;
-                self.mode = ConnectionMode::ConnectedDirectHid;
-                self.last_error = None;
-                self.direct_device = Some(Arc::new(dev));
-            }
-            Err(e) => {
-                self.mode = ConnectionMode::Disconnected;
-                self.status = None;
-                self.direct_device = None;
-                self.device_info = None;
-                self.last_error = Some(format!("No AK820 Max device accessible: {}", e));
-            }
-        }
+        let _ = self.cmd_tx.send(CoordinatorCmd::Refresh {
+            preferred: self.preferred_connection,
+        });
+        self.sync();
     }
 
-    /// Set RGB lighting effect.
+    /// Set RGB lighting effect without blocking the GUI thread.
     pub fn set_effect(&mut self, settings: &EffectSettings) -> Result<(), String> {
         if self.mode == ConnectionMode::ConnectedDaemon {
             let req = DaemonRequest::SetEffect {
@@ -228,16 +369,13 @@ impl HardwareCoordinator {
                 }),
                 color: settings.custom_color.map(|c| c.to_hex()),
             };
-
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
-            match rt.block_on(send_daemon_request(req)) {
-                Ok(DaemonResponse::Ok { .. }) => Ok(()),
-                Ok(DaemonResponse::Error { message }) => Err(message),
-                Err(e) => Err(e),
-                _ => Ok(()),
-            }
-        } else if let Some(dev) = &self.direct_device {
-            dev.set_lighting(settings).map_err(|e| e.to_string())
+            let _ = self.cmd_tx.send(CoordinatorCmd::DaemonReq(req));
+            Ok(())
+        } else if self.direct_device.is_some() {
+            let _ = self
+                .cmd_tx
+                .send(CoordinatorCmd::DirectSetLighting(settings.clone()));
+            Ok(())
         } else {
             Err("No keyboard connection available".to_string())
         }
@@ -250,14 +388,9 @@ impl HardwareCoordinator {
             let req = DaemonRequest::SetStatic {
                 color: color.to_hex(),
             };
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
-            match rt.block_on(send_daemon_request(req)) {
-                Ok(DaemonResponse::Ok { .. }) => Ok(()),
-                Ok(DaemonResponse::Error { message }) => Err(message),
-                Err(e) => Err(e),
-                _ => Ok(()),
-            }
-        } else if let Some(dev) = &self.direct_device {
+            let _ = self.cmd_tx.send(CoordinatorCmd::DaemonReq(req));
+            Ok(())
+        } else if self.direct_device.is_some() {
             let settings = EffectSettings {
                 mode: EffectMode::Static,
                 brightness: 5,
@@ -266,7 +399,8 @@ impl HardwareCoordinator {
                 palette_color: ajazz_rgb::color::PaletteColor::Rainbow,
                 custom_color: Some(color),
             };
-            dev.set_lighting(&settings).map_err(|e| e.to_string())
+            let _ = self.cmd_tx.send(CoordinatorCmd::DirectSetLighting(settings));
+            Ok(())
         } else {
             Err("No keyboard connection available".to_string())
         }
@@ -285,18 +419,25 @@ impl HardwareCoordinator {
                 key: format!("idx:{}", led_index),
                 color: color.to_hex(),
             };
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
-            let _ = rt.block_on(send_daemon_request(req));
+            let _ = self.cmd_tx.send(CoordinatorCmd::DaemonReq(req));
             Ok(())
-        } else if let Some(dev) = &self.direct_device {
-            dev.set_custom_matrix(&self.custom_matrix, 5).map_err(|e| e.to_string())
+        } else if self.direct_device.is_some() {
+            let _ = self.cmd_tx.send(CoordinatorCmd::DirectSetCustomMatrix(
+                self.custom_matrix,
+                5,
+            ));
+            Ok(())
         } else {
             Err("No keyboard connection available".to_string())
         }
     }
 
-    /// Apply an entire custom LED matrix.
-    pub fn upload_custom_matrix(&mut self, matrix: &[Color; TOTAL_LEDS], brightness: u8) -> Result<(), String> {
+    /// Apply an entire custom LED matrix without blocking.
+    pub fn upload_custom_matrix(
+        &mut self,
+        matrix: &[Color; TOTAL_LEDS],
+        brightness: u8,
+    ) -> Result<(), String> {
         self.custom_matrix = *matrix;
 
         if self.mode == ConnectionMode::ConnectedDaemon {
@@ -305,101 +446,130 @@ impl HardwareCoordinator {
                 colors,
                 brightness: Some(brightness),
             };
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
-            match rt.block_on(send_daemon_request(req)) {
-                Ok(DaemonResponse::Ok { .. }) => Ok(()),
-                Ok(DaemonResponse::Error { message }) => Err(message),
-                Err(e) => Err(e),
-                _ => Ok(()),
-            }
-        } else if let Some(dev) = &self.direct_device {
-            dev.set_custom_matrix(matrix, brightness).map_err(|e| e.to_string())
+            let _ = self.cmd_tx.send(CoordinatorCmd::DaemonReq(req));
+            Ok(())
+        } else if self.direct_device.is_some() {
+            let _ = self
+                .cmd_tx
+                .send(CoordinatorCmd::DirectSetCustomMatrix(*matrix, brightness));
+            Ok(())
         } else {
             Err("No keyboard connection available".to_string())
         }
     }
 
-    /// Start music visualizer stream in background or prepare direct device.
-    pub fn start_music_stream(
+    /// Hot-reload or start music visualizer stream in background daemon (<1ms response).
+    pub fn update_music_config(
         &mut self,
         style: &str,
+        color_mode: &ColorMode,
         color: Option<Color>,
         palette: Option<&str>,
         sensitivity: f32,
         noise_gate: Option<f32>,
+        decay: Option<f32>,
+        peak_hold: Option<bool>,
         source: Option<&str>,
         fps: u32,
+        morph_speed: Option<f32>,
+    ) {
+        if self.mode == ConnectionMode::ConnectedDaemon {
+            let req = DaemonRequest::StartMusic {
+                style: style.to_string(),
+                color: color.map(|c| c.to_hex()),
+                palette: palette.map(|p| p.to_string()),
+                color_mode: Some(color_mode.name().to_string()),
+                sensitivity: Some(sensitivity),
+                noise_gate,
+                decay,
+                peak_hold,
+                source: source.map(|s| s.to_string()),
+                fps: Some(fps),
+                morph_speed,
+            };
+            let _ = self.cmd_tx.send(CoordinatorCmd::DaemonReq(req));
+        }
+    }
+
+    /// Start music visualizer stream on hardware.
+    pub fn start_music(
+        &mut self,
+        style: &str,
+        color_mode: &ColorMode,
+        color: Option<Color>,
+        palette: Option<&str>,
+        sensitivity: f32,
+        noise_gate: Option<f32>,
+        decay: Option<f32>,
+        peak_hold: Option<bool>,
+        source: Option<&str>,
+        fps: u32,
+        morph_speed: Option<f32>,
     ) -> Result<(), String> {
         if self.mode == ConnectionMode::ConnectedDaemon {
             let req = DaemonRequest::StartMusic {
                 style: style.to_string(),
                 color: color.map(|c| c.to_hex()),
                 palette: palette.map(|p| p.to_string()),
+                color_mode: Some(color_mode.name().to_string()),
                 sensitivity: Some(sensitivity),
                 noise_gate,
+                decay,
+                peak_hold,
                 source: source.map(|s| s.to_string()),
                 fps: Some(fps),
+                morph_speed,
             };
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
-            match rt.block_on(send_daemon_request(req)) {
-                Ok(DaemonResponse::Ok { .. }) => Ok(()),
-                Ok(DaemonResponse::Error { message }) => Err(message),
-                Err(e) => Err(e),
-                _ => Ok(()),
-            }
-        } else if let Some(ref dev) = self.direct_device {
-            dev.enter_live_music_mode().map_err(|e| e.to_string())
+            let _ = self.cmd_tx.send(CoordinatorCmd::DaemonReq(req));
+            Ok(())
+        } else if self.direct_device.is_some() {
+            let _ = self.cmd_tx.send(CoordinatorCmd::DirectEnterMusic);
+            Ok(())
         } else {
             Err("No keyboard connection available".to_string())
         }
     }
 
-    /// Alias for start_music_stream
-    pub fn start_music(
-        &mut self,
-        style: &str,
-        color: Option<Color>,
-        palette: Option<&str>,
-        sensitivity: f32,
-        noise_gate: Option<f32>,
-        source: Option<&str>,
-        fps: u32,
-    ) -> Result<(), String> {
-        self.start_music_stream(style, color, palette, sensitivity, noise_gate, source, fps)
-    }
-
-    /// Stop background music visualizer.
-    pub fn stop_music_stream(&mut self) -> Result<(), String> {
+    /// Shuffle zone gradients on daemon
+    pub fn shuffle_music_zones(&mut self) {
         if self.mode == ConnectionMode::ConnectedDaemon {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
-            match rt.block_on(send_daemon_request(DaemonRequest::StopMusic)) {
-                Ok(DaemonResponse::Ok { .. }) => Ok(()),
-                Ok(DaemonResponse::Error { message }) => Err(message),
-                Err(e) => Err(e),
-                _ => Ok(()),
-            }
-        } else {
-            Ok(())
+            let _ = self
+                .cmd_tx
+                .send(CoordinatorCmd::DaemonReq(DaemonRequest::ShuffleMusicZones));
         }
     }
 
-    /// Alias for stop_music_stream
+    /// Re-roll random mosaic on daemon
+    pub fn reroll_music_mosaic(&mut self) {
+        if self.mode == ConnectionMode::ConnectedDaemon {
+            let _ = self
+                .cmd_tx
+                .send(CoordinatorCmd::DaemonReq(DaemonRequest::RerollMusicMosaic));
+        }
+    }
+
+    /// Stop background music visualizer.
     pub fn stop_music(&mut self) -> Result<(), String> {
-        self.stop_music_stream()
+        if self.mode == ConnectionMode::ConnectedDaemon {
+            let _ = self
+                .cmd_tx
+                .send(CoordinatorCmd::DaemonReq(DaemonRequest::StopMusic));
+        }
+        Ok(())
     }
 
     /// Configure hardware sleep timeout in minutes (0 = never).
     pub fn set_sleep_timeout(&mut self, minutes: u8) -> Result<(), String> {
         if self.mode == ConnectionMode::ConnectedDaemon {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
-            match rt.block_on(send_daemon_request(DaemonRequest::SetSleep { minutes })) {
-                Ok(DaemonResponse::Ok { .. }) => Ok(()),
-                Ok(DaemonResponse::Error { message }) => Err(message),
-                Err(e) => Err(e),
-                _ => Ok(()),
-            }
-        } else if let Some(dev) = &self.direct_device {
-            dev.set_sleep_timeout(minutes).map_err(|e| e.to_string())
+            let _ = self
+                .cmd_tx
+                .send(CoordinatorCmd::DaemonReq(DaemonRequest::SetSleep {
+                    minutes,
+                }));
+            Ok(())
+        } else if self.direct_device.is_some() {
+            let _ = self.cmd_tx.send(CoordinatorCmd::DirectSetSleep(minutes));
+            Ok(())
         } else {
             Err("No keyboard connection available".to_string())
         }
@@ -411,3 +581,4 @@ impl HardwareCoordinator {
         &self.custom_matrix
     }
 }
+

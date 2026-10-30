@@ -1,8 +1,8 @@
 mod ipc;
 
 use ajazz_audio::capture::AudioSource;
-use ajazz_audio::visualizer::ColorPalette;
-use ajazz_audio::{AudioCapture, FFT_SIZE, MusicRenderer, SpectrumAnalyzer, VisualizerStyle};
+use ajazz_audio::visualizer::{ColorMode, ColorPalette, VisualizerConfig, VisualizerStyle};
+use ajazz_audio::{AudioCapture, FFT_SIZE, MusicRenderer, SpectrumAnalyzer};
 use ajazz_hid::{AjazzDevice, DeviceError, DeviceStatus, HardwareConnection, PowerState};
 use ajazz_rgb::color::{Color, PaletteColor};
 use ajazz_rgb::effects::{Direction, EffectMode, EffectSettings};
@@ -38,6 +38,10 @@ struct DaemonState {
     devnode_override: Option<String>,
     music_active: Arc<AtomicBool>,
     music_handle: Option<std::thread::JoinHandle<()>>,
+    music_hid_handle: Option<std::thread::JoinHandle<()>>,
+    music_config: Arc<parking_lot::RwLock<VisualizerConfig>>,
+    music_source: Arc<parking_lot::RwLock<AudioSource>>,
+    music_action_trigger: Arc<std::sync::atomic::AtomicUsize>,
     custom_matrix: [Color; TOTAL_LEDS],
     last_settings: EffectSettings,
 }
@@ -50,6 +54,10 @@ impl DaemonState {
             devnode_override: None,
             music_active: Arc::new(AtomicBool::new(false)),
             music_handle: None,
+            music_hid_handle: None,
+            music_config: Arc::new(parking_lot::RwLock::new(VisualizerConfig::default())),
+            music_source: Arc::new(parking_lot::RwLock::new(AudioSource::SystemLoopback)),
+            music_action_trigger: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             custom_matrix: [Color::BLACK; TOTAL_LEDS],
             last_settings: EffectSettings::default(),
         }
@@ -94,6 +102,9 @@ impl DaemonState {
             info!("Stopping background music visualization");
             if let Some(handle) = self.music_handle.take() {
                 let _ = handle.join();
+            }
+            if let Some(hid_handle) = self.music_hid_handle.take() {
+                let _ = hid_handle.join();
             }
             let last_settings = self.last_settings.clone();
             if let Ok(dev) = self.ensure_device() {
@@ -371,48 +382,79 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
             style,
             color,
             palette,
+            color_mode,
             sensitivity,
             noise_gate,
+            decay,
+            peak_hold,
             source,
             fps,
+            morph_speed,
         } => {
-            st.stop_music();
-
-            let vis_style = match VisualizerStyle::from_name(&style) {
-                Some(s) => s,
-                None => {
-                    return DaemonResponse::Error {
-                        message: format!("Unknown visualizer style: {}", style),
-                    };
-                }
-            };
-
-            let color_palette = if let Some(p_name) = palette {
-                ColorPalette::from_name(&p_name).unwrap_or(ColorPalette::StockClassic)
-            } else if let Some(c_str) = &color {
+            let vis_style = VisualizerStyle::from_name(&style).unwrap_or(VisualizerStyle::Spectrum);
+            let parsed_color_mode = if let Some(ref cm_str) = color_mode {
+                ColorMode::from_name(cm_str).unwrap_or(ColorMode::Palette(ColorPalette::StockClassic))
+            } else if let Some(ref p_str) = palette {
+                ColorMode::Palette(ColorPalette::from_name(p_str).unwrap_or(ColorPalette::StockClassic))
+            } else if let Some(ref c_str) = color {
                 if let Ok(c) = Color::from_str(c_str) {
-                    ColorPalette::CustomGradient {
+                    ColorMode::CustomGradient {
                         base: c.scale(0.3),
                         peak: c,
                     }
                 } else {
-                    ColorPalette::StockClassic
+                    ColorMode::Palette(ColorPalette::StockClassic)
                 }
             } else {
-                ColorPalette::StockClassic
+                ColorMode::Palette(ColorPalette::StockClassic)
             };
 
-            let custom_tint = color.and_then(|c| Color::from_str(&c).ok());
-            let target_fps = fps.unwrap_or(30).clamp(10, 60);
             let sens = sensitivity.unwrap_or(1.2).clamp(0.1, 5.0);
-            let gate = noise_gate.unwrap_or(0.05).clamp(0.0, 0.5);
+            let gate = noise_gate.unwrap_or(0.04).clamp(0.0, 0.4);
+            let decay_spd = decay.unwrap_or(2.8).clamp(1.0, 6.0);
+            let pk_hold = peak_hold.unwrap_or(true);
+            let target_fps = fps.unwrap_or(60).clamp(10, 90);
+            let morph = morph_speed.unwrap_or(1.5).clamp(0.1, 5.0);
 
             let audio_src = match source.as_deref() {
-                Some("mic") | Some("microphone") => Some(AudioSource::Microphone),
-                Some("system") | Some("loopback") | Some("desktop") => Some(AudioSource::SystemLoopback),
-                Some(name) => Some(AudioSource::Custom(name.to_string())),
-                None => Some(AudioSource::SystemLoopback),
+                Some("mic") | Some("microphone") => AudioSource::Microphone,
+                Some("system") | Some("loopback") | Some("desktop") => AudioSource::SystemLoopback,
+                Some(name) => AudioSource::Custom(name.to_string()),
+                None => AudioSource::SystemLoopback,
             };
+
+            // HOT-RELOAD CHECK: If already active and source is identical, update config in-place immediately without stopping!
+            if st.music_active.load(Ordering::SeqCst) && *st.music_source.read() == audio_src {
+                {
+                    let mut cfg = st.music_config.write();
+                    cfg.style = vis_style;
+                    cfg.color_mode = parsed_color_mode.clone();
+                    cfg.sensitivity = sens;
+                    cfg.noise_gate = gate;
+                    cfg.decay_speed = decay_spd;
+                    cfg.peak_hold = pk_hold;
+                    cfg.fps = target_fps;
+                    cfg.morph_speed = morph;
+                }
+                return DaemonResponse::Ok {
+                    message: format!("Instant hot-reload: style {:?}, mode {}", vis_style, parsed_color_mode.name()),
+                };
+            }
+
+            // Otherwise, start or restart capture stream
+            st.stop_music();
+            *st.music_source.write() = audio_src.clone();
+            {
+                let mut cfg = st.music_config.write();
+                cfg.style = vis_style;
+                cfg.color_mode = parsed_color_mode;
+                cfg.sensitivity = sens;
+                cfg.noise_gate = gate;
+                cfg.decay_speed = decay_spd;
+                cfg.peak_hold = pk_hold;
+                cfg.fps = target_fps;
+                cfg.morph_speed = morph;
+            }
 
             let dev = match st.ensure_device() {
                 Ok(d) => d,
@@ -429,15 +471,41 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
 
             st.music_active.store(true, Ordering::SeqCst);
             let active_flag = Arc::clone(&st.music_active);
+            let active_flag_hid = Arc::clone(&st.music_active);
             let dev_clone = Arc::clone(&dev);
+            let config_clone = Arc::clone(&st.music_config);
+            let trigger_clone = Arc::clone(&st.music_action_trigger);
 
+            // Single-slot conflated frame buffer: audio thread overwrites latest, HID writer grabs freshest
+            let latest_frame: Arc<(parking_lot::Mutex<Option<[Color; TOTAL_LEDS]>>, parking_lot::Condvar)> =
+                Arc::new((parking_lot::Mutex::new(None), parking_lot::Condvar::new()));
+            let latest_frame_producer = Arc::clone(&latest_frame);
+            let latest_frame_consumer = Arc::clone(&latest_frame);
+
+            // Dedicated Zero-Latency Hardware HID Writer Thread
+            let hid_handle = std::thread::spawn(move || {
+                info!("Hardware HID Writer thread active (Latest-Frame-Wins)");
+                while active_flag_hid.load(Ordering::SeqCst) {
+                    let frame_opt = {
+                        let (lock, cvar) = &*latest_frame_consumer;
+                        let mut slot = lock.lock();
+                        while slot.is_none() && active_flag_hid.load(Ordering::SeqCst) {
+                            cvar.wait_for(&mut slot, Duration::from_millis(25));
+                        }
+                        slot.take() // Grab newest frame, drop any backlog!
+                    };
+
+                    if let Some(frame) = frame_opt {
+                        let _ = dev_clone.send_live_frame(&frame);
+                    }
+                }
+                info!("Hardware HID Writer thread stopped cleanly");
+            });
+
+            // Audio Capture & Visualizer Loop Thread
             let handle = std::thread::spawn(move || {
-                info!(
-                    "Music visualizer thread started (style: {:?}, palette: {:?}, target {} FPS, sensitivity {:.2})",
-                    vis_style, color_palette, target_fps, sens
-                );
-
-                let capture = match AudioCapture::new(audio_src) {
+                info!("Daemon Audio Capture & Visualizer Engine started");
+                let capture = match AudioCapture::new(Some(audio_src)) {
                     Ok(c) => c,
                     Err(e) => {
                         error!("Failed to initialize audio capture: {}", e);
@@ -446,12 +514,14 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
                     }
                 };
 
-                let mut analyzer = SpectrumAnalyzer::new(capture.sample_rate(), sens);
-                analyzer.set_noise_gate(gate);
-                let mut renderer = MusicRenderer::new(vis_style, custom_tint);
-                renderer.set_palette(color_palette);
+                let init_cfg = config_clone.read().clone();
+                let mut analyzer = SpectrumAnalyzer::new(capture.sample_rate(), init_cfg.sensitivity);
+                analyzer.set_noise_gate(init_cfg.noise_gate);
+                analyzer.set_decay_speed(init_cfg.decay_speed);
+                analyzer.set_peak_hold(init_cfg.peak_hold);
 
-                let frame_dur = Duration::from_micros((1_000_000 / target_fps as u64).max(16_666));
+                let mut renderer = MusicRenderer::with_config(init_cfg);
+
                 let mut last_instant = Instant::now();
 
                 while active_flag.load(Ordering::SeqCst) {
@@ -459,24 +529,54 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
                     let dt = last_instant.elapsed().as_secs_f32().max(0.001);
                     last_instant = start;
 
+                    // Sync in-memory hot-reloaded config (<1ms response!)
+                    let target_fps = {
+                        let cfg = config_clone.read();
+                        analyzer.set_sensitivity(cfg.sensitivity);
+                        analyzer.set_noise_gate(cfg.noise_gate);
+                        analyzer.set_decay_speed(cfg.decay_speed);
+                        analyzer.set_peak_hold(cfg.peak_hold);
+                        renderer.config.style = cfg.style;
+                        renderer.config.color_mode = cfg.color_mode.clone();
+                        renderer.config.morph_speed = cfg.morph_speed;
+                        cfg.fps
+                    };
+
+                    // Check action triggers
+                    let action = trigger_clone.swap(0, Ordering::Relaxed);
+                    if action == 1 {
+                        renderer.shuffle_zone_gradient();
+                    } else if action == 2 {
+                        renderer.reroll_mosaic();
+                    }
+
                     let pcm = capture.read_latest(FFT_SIZE);
                     if !pcm.is_empty() {
                         analyzer.update_with_dt(&pcm, dt);
                     }
 
                     let frame = renderer.render(&analyzer, dt);
-                    let _ = dev_clone.send_live_frame(&frame);
 
+                    // Overwrite single-slot buffer for HID writer thread
+                    {
+                        let (lock, cvar) = &*latest_frame_producer;
+                        let mut slot = lock.lock();
+                        *slot = Some(frame);
+                        cvar.notify_one();
+                    }
+
+                    let frame_dur = Duration::from_micros((1_000_000 / target_fps as u64).max(11_111));
                     let elapsed = start.elapsed();
                     if elapsed < frame_dur {
                         std::thread::sleep(frame_dur - elapsed);
                     }
                 }
 
-                info!("Music visualizer thread exited");
+                info!("Daemon Audio Capture thread exited");
             });
 
             st.music_handle = Some(handle);
+            st.music_hid_handle = Some(hid_handle);
             DaemonResponse::Ok {
                 message: format!("Started music visualization (style: {:?})", vis_style),
             }
@@ -486,6 +586,20 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
             st.stop_music();
             DaemonResponse::Ok {
                 message: "Music visualization stopped".to_string(),
+            }
+        }
+
+        DaemonRequest::ShuffleMusicZones => {
+            st.music_action_trigger.store(1, Ordering::Relaxed);
+            DaemonResponse::Ok {
+                message: "Shuffled zone gradients".into(),
+            }
+        }
+
+        DaemonRequest::RerollMusicMosaic => {
+            st.music_action_trigger.store(2, Ordering::Relaxed);
+            DaemonResponse::Ok {
+                message: "Re-rolled static mosaic colors".into(),
             }
         }
 
