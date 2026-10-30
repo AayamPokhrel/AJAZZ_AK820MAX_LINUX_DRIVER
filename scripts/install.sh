@@ -111,7 +111,7 @@ do_install() {
         gtk-update-icon-cache -q -t -f "${PREFIX}/share/icons/hicolor" 2>/dev/null || true
     fi
 
-    log_success "Installation of Ajazz AK820 Max Suite v1.1.1 completed successfully!"
+    log_success "Installation of Ajazz AK820 Max Suite v1.2.0 completed successfully!"
     echo
     echo -e "  To launch the GUI:          ${BOLD}ak820-gui${RESET}"
     echo -e "  To query keyboard status:   ${BOLD}ak820ctl status${RESET}"

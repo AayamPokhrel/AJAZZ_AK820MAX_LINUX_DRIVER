@@ -1,7 +1,7 @@
 # Ajazz AK820 Max — Linux Native Driver, GUI Studio & RGB Music Visualizer
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
-[![Version: 1.1.1](https://img.shields.io/badge/Version-v1.1.1-brightgreen.svg)](Cargo.toml)
+[![Version: 1.2.0](https://img.shields.io/badge/Version-v1.2.0-brightgreen.svg)](Cargo.toml)
 [![NixOS](https://img.shields.io/badge/NixOS-Flake%20Ready-5277C3.svg?logo=nixos&logoColor=white)](flake.nix)
 [![Rust 2021](https://img.shields.io/badge/Rust-2021%20Edition-DEA584.svg?logo=rust&logoColor=white)](Cargo.toml)
 
@@ -11,7 +11,21 @@ Built natively for **Linux & NixOS**, this project serves as a full, drop-in rep
 
 ---
 
-## What's New in v1.1.1
+## What's New in v1.2.0
+
+- ⌨️ **Interactive Typing Reactive RGB Modes in Lighting Effects Studio**:
+  - **Random Gradient Splash**: Keypresses activate dynamic multi-color spatial gradient waves that ripple outward and smoothly settle.
+  - **Chaos FX Roulette**: Keystrokes randomly trigger dynamic visual phenomena (lasers, shockwaves, thermal bursts, starbursts).
+  - **Neon Shockwave**: Radial circular shockwaves expand from the pressed key at 500 px/s with real-time wave interference.
+  - **Thermal Fire Heatmap**: Physical heat diffusion simulation mapping keystroke rate to an incandescent blackbody/fire ramp.
+  - **Matrix Code Rain**: Keystrokes cascade phosphor-green digital rain drops down the key's column with luminous white heads.
+  - **Crossfire Lasers**: Horizontal and vertical neon beams radiating across the keyboard matrix on keypress.
+  - **Starlight Supernova & Sparks**: Particle sparklers exploding from pressed keys with physics and gentle afterglow.
+  - **Cosmic Aurora Surge**: Undulating ribbons of violet/turquoise aurora surging with typing rhythm and keystroke velocity.
+- 🎯 **Fixed Mismatched Hardware Effect Mode IDs (`kb-k600t.xml`)**:
+  - Audited and realigned all 16 built-in hardware lighting effects to their verified firmware IDs: Ripple L-R (1), Starry (2), Ripple U-D (3), Flash Away/Ejection (4), Spectrum (5), Kaleidoscope (6), Static (7), Breathing (8), Cross/Blossom (9), Single Key Reactive (11), Picture Scroll (12), Waterfall (15), Raindrops (16), Windmill (17), Sine Wave (18), Storm/Galloping (19).
+- ⚡ **Zero-Lag evdev Input Listener**:
+  - Direct non-blocking physical key event capture (`/dev/input/by-id/*BY_Tech*event-kbd`) integrated into the daemon live streaming pipeline (30-60 FPS) without grabbing exclusive mode. Standard typing remains 100% fluid and unaffected.
 
 - 🔬 **1:1 Vendor Binary Reverse-Engineered Driver (`OemDrv.exe` & `CDevG5KB`)**:
   - Replaced all heuristic framing with the exact vendor binary communication protocol decompiled from `OemDrv.exe` (`0x0048abe0` `AccessData`, `0x0048b2d0` `SetLED`, `0x0048b970` `SetLedRgbTab`, `0x0048ae20` `SetCfg`).

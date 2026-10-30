@@ -92,37 +92,112 @@ pub fn render_effects_studio(
 
         ui.add_space(8.0);
 
-        // Effect Buttons Grid (All 20 verified hardware effect modes)
-        let effects = [
-            ("Static", EffectMode::Static),
-            ("Rainbow / Spectrum", EffectMode::Spectrum),
-            ("Breathing", EffectMode::Breathing),
+        // Section 1: Interactive Typing Reactive RGB Modes
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("⌨️ Interactive Typing Reactive Modes")
+                    .strong()
+                    .color(ThemeColors::ACCENT_CYAN),
+            );
+            ui.label(
+                egui::RichText::new("LIVE STREAMING (30-60 FPS)")
+                    .small()
+                    .color(ThemeColors::STATUS_SUCCESS),
+            );
+        });
+        ui.add_space(2.0);
+        ui.label(
+            egui::RichText::new("Type on your physical keyboard to trigger dynamic reactive effects, shockwaves, thermal heat, and random gradient splashes.")
+                .small()
+                .color(ThemeColors::TEXT_MUTED),
+        );
+        ui.add_space(6.0);
+
+        let typing_effects = [
+            ("⚡ Gradient Splash", EffectMode::TypingSplash, "Dynamic random gradient waves ripple outwards on typing"),
+            ("🎲 Chaos Roulette", EffectMode::TypingRoulette, "Every keypress randomly triggers lasers, ripples & sparks"),
+            ("🌊 Neon Shockwave", EffectMode::TypingShockwave, "Radial shockwaves expanding at 500 px/s with interference"),
+            ("🔥 Thermal Heatmap", EffectMode::TypingHeatmap, "Physical heat diffusion & glowing ember blackbody ramp"),
+            ("🟢 Matrix Code Rain", EffectMode::TypingMatrix, "Digital matrix drops cascading down columns of pressed keys"),
+            ("🎯 Crossfire Lasers", EffectMode::TypingLaser, "Horizontal & vertical neon beam intersections"),
+            ("✨ Starlight Sparks", EffectMode::TypingSparks, "Explosive particle sparklers bursting with physics"),
+            ("🌌 Cosmic Aurora", EffectMode::TypingAurora, "Undulating ribbons swelling with keystroke rhythm"),
+        ];
+
+        egui::Grid::new("typing_effects_grid")
+            .spacing(vec2(8.0, 8.0))
+            .show(ui, |ui| {
+                for (idx, (label, mode, tip)) in typing_effects.iter().enumerate() {
+                    let is_active = state.current_settings.mode == *mode;
+                    let btn = egui::Button::new(*label)
+                        .min_size(vec2(165.0, 38.0))
+                        .rounding(Rounding::same(8.0))
+                        .fill(if is_active {
+                            Color32::from_rgb(45, 20, 75)
+                        } else {
+                            ThemeColors::BG_CARD
+                        })
+                        .stroke(if is_active {
+                            Stroke::new(2.0_f32, ThemeColors::ACCENT_CYAN)
+                        } else {
+                            Stroke::new(1.0_f32, Color32::from_rgb(60, 45, 90))
+                        });
+
+                    let resp = ui.add(btn).on_hover_text(*tip);
+                    if resp.clicked() {
+                        state.current_settings.mode = *mode;
+                        let _ = coordinator.set_effect(&state.current_settings);
+                        state.status_message = Some((
+                            format!("Activated interactive {}", label),
+                            true,
+                        ));
+                    }
+
+                    if (idx + 1) % 4 == 0 {
+                        ui.end_row();
+                    }
+                }
+            });
+
+        ui.add_space(14.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // Section 2: Hardware Built-in Effects (16 modes from kb-k600t.xml)
+        ui.label(
+            egui::RichText::new("⚙️ Hardware Built-in Firmware Effects")
+                .strong()
+                .color(ThemeColors::TEXT_SECONDARY),
+        );
+        ui.add_space(6.0);
+
+        let hw_effects = [
+            ("Rainbow Spectrum", EffectMode::Spectrum),
+            ("Static Constant", EffectMode::Static),
+            ("Overall Breathing", EffectMode::Breathing),
             ("Windmill", EffectMode::Windmill),
             ("Sine Wave", EffectMode::SineWave),
-            ("Neon Stream", EffectMode::Screen),
             ("Waterfall", EffectMode::TopBottom),
             ("Storm", EffectMode::Galloping),
             ("Raindrops", EffectMode::Rain),
             ("Ripple L-R", EffectMode::RippleLr),
             ("Ripple U-D", EffectMode::RippleUd),
-            ("Cross / Blossom", EffectMode::Cross),
-            ("Reactive", EffectMode::KeyBreathing),
+            ("Cross Blossom", EffectMode::Cross),
+            ("Key Reactive", EffectMode::KeyBreathing),
             ("Stars Twinkle", EffectMode::Starry),
             ("Flash Away", EffectMode::Ejection),
-            ("Rainbow Wheel", EffectMode::Kaleidoscope),
-            ("Music Reactive", EffectMode::Music),
-            ("Shadow Disappear", EffectMode::Scroll),
-            ("Custom Stream", EffectMode::Custom),
+            ("Kaleidoscope", EffectMode::Kaleidoscope),
+            ("Picture Scroll", EffectMode::Scroll),
             ("Lights Off", EffectMode::Off),
         ];
 
-        egui::Grid::new("effects_grid")
+        egui::Grid::new("hw_effects_grid")
             .spacing(vec2(8.0, 8.0))
             .show(ui, |ui| {
-                for (idx, (label, mode)) in effects.iter().enumerate() {
+                for (idx, (label, mode)) in hw_effects.iter().enumerate() {
                     let is_active = state.current_settings.mode == *mode;
                     let btn = egui::Button::new(*label)
-                        .min_size(vec2(130.0, 36.0))
+                        .min_size(vec2(130.0, 34.0))
                         .rounding(Rounding::same(8.0))
                         .fill(if is_active {
                             ThemeColors::ACCENT_PURPLE
@@ -139,7 +214,7 @@ pub fn render_effects_studio(
                         state.current_settings.mode = *mode;
                         let _ = coordinator.set_effect(&state.current_settings);
                         state.status_message = Some((
-                            format!("Activated {} effect", label),
+                            format!("Activated hardware {}", label),
                             true,
                         ));
                     }

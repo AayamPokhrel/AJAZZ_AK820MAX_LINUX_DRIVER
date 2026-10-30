@@ -44,25 +44,36 @@ fn test_palette_closest_matcher() {
 
 #[test]
 fn test_effect_mode_hardware_id_mappings() {
-    assert_eq!(EffectMode::Static.mode_id(), 1);
-    assert_eq!(EffectMode::Spectrum.mode_id(), 2);
-    assert_eq!(EffectMode::Breathing.mode_id(), 3);
-    assert_eq!(EffectMode::Custom.mode_id(), 4);
-    assert_eq!(EffectMode::Windmill.mode_id(), 5);
-    assert_eq!(EffectMode::SineWave.mode_id(), 6);
-    assert_eq!(EffectMode::Screen.mode_id(), 7);
-    assert_eq!(EffectMode::TopBottom.mode_id(), 8);
-    assert_eq!(EffectMode::Galloping.mode_id(), 9);
-    assert_eq!(EffectMode::Rain.mode_id(), 10);
-    assert_eq!(EffectMode::RippleLr.mode_id(), 11);
-    assert_eq!(EffectMode::Cross.mode_id(), 12);
-    assert_eq!(EffectMode::KeyBreathing.mode_id(), 13);
-    assert_eq!(EffectMode::Starry.mode_id(), 14);
-    assert_eq!(EffectMode::Ejection.mode_id(), 15);
-    assert_eq!(EffectMode::Kaleidoscope.mode_id(), 16);
-    assert_eq!(EffectMode::Music.mode_id(), 17);
-    assert_eq!(EffectMode::Scroll.mode_id(), 18);
+    assert_eq!(EffectMode::RippleLr.mode_id(), 1);
+    assert_eq!(EffectMode::Starry.mode_id(), 2);
+    assert_eq!(EffectMode::RippleUd.mode_id(), 3);
+    assert_eq!(EffectMode::Ejection.mode_id(), 4);
+    assert_eq!(EffectMode::Spectrum.mode_id(), 5);
+    assert_eq!(EffectMode::Kaleidoscope.mode_id(), 6);
+    assert_eq!(EffectMode::Static.mode_id(), 7);
+    assert_eq!(EffectMode::Breathing.mode_id(), 8);
+    assert_eq!(EffectMode::Cross.mode_id(), 9);
+    assert_eq!(EffectMode::KeyBreathing.mode_id(), 11);
+    assert_eq!(EffectMode::Scroll.mode_id(), 12);
+    assert_eq!(EffectMode::TopBottom.mode_id(), 15);
+    assert_eq!(EffectMode::Rain.mode_id(), 16);
+    assert_eq!(EffectMode::Windmill.mode_id(), 17);
+    assert_eq!(EffectMode::SineWave.mode_id(), 18);
+    assert_eq!(EffectMode::Galloping.mode_id(), 19);
+    assert_eq!(EffectMode::Music.mode_id(), 22);
+    assert_eq!(EffectMode::Custom.mode_id(), 24);
     assert_eq!(EffectMode::Off.mode_id(), 0);
+
+    // Interactive Typing Modes
+    assert!(EffectMode::TypingSplash.is_typing_reactive());
+    assert!(EffectMode::TypingSplash.is_software_stream());
+    assert!(EffectMode::TypingRoulette.is_software_stream());
+    assert!(EffectMode::TypingShockwave.is_software_stream());
+    assert!(EffectMode::TypingHeatmap.is_software_stream());
+    assert!(EffectMode::TypingMatrix.is_software_stream());
+    assert!(EffectMode::TypingLaser.is_software_stream());
+    assert!(EffectMode::TypingSparks.is_software_stream());
+    assert!(EffectMode::TypingAurora.is_software_stream());
 
     // Aliases
     assert_eq!(EffectMode::from_name("Rainbow"), Some(EffectMode::Spectrum));
@@ -72,7 +83,38 @@ fn test_effect_mode_hardware_id_mappings() {
     assert_eq!(EffectMode::from_name("Raindrops"), Some(EffectMode::Rain));
     assert_eq!(EffectMode::from_name("Stars_twinkle"), Some(EffectMode::Starry));
     assert_eq!(EffectMode::from_name("Lights Off"), Some(EffectMode::Off));
+    assert_eq!(EffectMode::from_name("randomgradient"), Some(EffectMode::TypingSplash));
+    assert_eq!(EffectMode::from_name("chaos"), Some(EffectMode::TypingRoulette));
+    assert_eq!(EffectMode::from_name("shockwave"), Some(EffectMode::TypingShockwave));
+    assert_eq!(EffectMode::from_name("heatmap"), Some(EffectMode::TypingHeatmap));
+    assert_eq!(EffectMode::from_name("matrix"), Some(EffectMode::TypingMatrix));
 }
+
+#[test]
+fn test_typing_engine_simulation() {
+    use ajazz_rgb::typing::{TypingEngine, TypingMode};
+    let mut engine = TypingEngine::new(TypingMode::RandomGradientSplash);
+
+    // Test keypress triggers
+    engine.on_key_down(0, 0, 0, 29.0, 41.0);
+    let frame1 = engine.update(0.016);
+    assert_ne!(frame1[0], Color::BLACK);
+
+    // Test shockwave mode
+    engine.set_mode(TypingMode::ShockwaveRipple);
+    engine.on_key_down(35, 5, 3, 153.0, 212.0); // Spacebar
+    let frame2 = engine.update(0.016);
+    assert_ne!(frame2[35], Color::BLACK);
+
+    // Test heatmap mode
+    engine.set_mode(TypingMode::ThermalHeatmap);
+    for _ in 0..5 {
+        engine.on_key_down(21, 3, 3, 153.0, 148.0); // D key
+    }
+    let frame_thermal = engine.update(0.016);
+    assert!(frame_thermal[21].r > 200); // Hot fire color
+}
+
 
 #[test]
 fn test_live_music_packet_framing() {
@@ -123,7 +165,7 @@ fn test_bycombo_wired_set_led_packet_format() {
     assert_eq!(pkt[1], 0x04); // cmd = 0x04 (SetLED)
     assert_eq!(pkt[2], 0x01); // Write
     assert_eq!(pkt[6], 0x80); // 128 bytes length
-    assert_eq!(pkt[8 + 10], 6); // hw = 6 (SineWave)
+    assert_eq!(pkt[8 + 10], 18); // hw = 18 (SineWave in real hardware firmware)
     assert_eq!(pkt[8 + 126], 0x5A); // magic trailer
     assert_eq!(pkt[8 + 127], 0xA5);
 }

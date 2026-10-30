@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 #[command(
     name = "ak820ctl",
     author = "Antigravity Systems Team",
-    version = "1.1.1",
+    version = "1.2.0",
     about = "Native Linux CLI control utility for Ajazz AK820 Max mechanical keyboards (Tri-Mode: Wired, 2.4G, Bluetooth)"
 )]
 struct Cli {

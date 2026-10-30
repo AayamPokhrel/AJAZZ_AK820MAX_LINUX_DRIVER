@@ -111,7 +111,23 @@ impl eframe::App for Ak820App {
             self.last_status_poll = Instant::now();
             self.coordinator.refresh();
         }
-        self.coordinator.sync();
+        // Capture GUI key events to animate preview interactively
+        ctx.input(|i| {
+            for event in &i.events {
+                if let egui::Event::Key { key, pressed: true, .. } = event {
+                    let key_str = format!("{:?}", key).to_lowercase();
+                    if let Some(def) = ajazz_rgb::layout::find_key_by_name(&key_str) {
+                        FrameRenderer::on_preview_key_press(
+                            def.hw_idx,
+                            def.row,
+                            def.col,
+                            def.rect.center_x(),
+                            def.rect.center_y(),
+                        );
+                    }
+                }
+            }
+        });
 
         // Render live preview frame based on current effect
         let preview_frame = FrameRenderer::render(

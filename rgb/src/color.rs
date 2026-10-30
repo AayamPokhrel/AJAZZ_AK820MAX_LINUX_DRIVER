@@ -96,6 +96,22 @@ impl Color {
     pub fn to_hex(&self) -> String {
         format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
     }
+
+    /// Saturating additive blend of two colors.
+    pub fn add(self, other: Self) -> Self {
+        Self::new(
+            self.r.saturating_add(other.r),
+            self.g.saturating_add(other.g),
+            self.b.saturating_add(other.b),
+        )
+    }
+}
+
+impl std::ops::Add for Color {
+    type Output = Self;
+    fn add(self, other: Self) -> Self {
+        self.add(other)
+    }
 }
 
 impl fmt::Display for Color {

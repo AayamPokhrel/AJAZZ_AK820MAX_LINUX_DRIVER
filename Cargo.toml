@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.1.1"
+version = "1.2.0"
 edition = "2021"
 authors = ["Aayam Pokhrel <pokhrelaayam1010@gmail.com>", "Ajazz Linux Community"]
 license = "MIT OR Apache-2.0"

@@ -183,43 +183,14 @@ pub fn parse_bycombo_status(feature_buf: &[u8]) -> Option<DeviceStatus> {
     })
 }
 
-/// Convert high-level EffectMode to BY-COMBO hardware mode ID matching KB.ini
+/// Convert high-level EffectMode to BY-COMBO / Shinetek hardware mode ID matching kb-k600t.xml & KB.ini
 pub fn bycombo_hw_mode(mode: EffectMode) -> u8 {
-    match mode {
-        EffectMode::Static => 1,
-        EffectMode::Spectrum => 2,
-        EffectMode::Breathing => 3,
-        EffectMode::Custom => 4,
-        EffectMode::Windmill => 5,
-        EffectMode::SineWave => 6,
-        EffectMode::Screen => 7,
-        EffectMode::TopBottom => 8,
-        EffectMode::Galloping => 9,
-        EffectMode::Rain => 10,
-        EffectMode::RippleLr => 11,
-        EffectMode::RippleUd => 11,
-        EffectMode::Cross => 12,
-        EffectMode::KeyBreathing => 13,
-        EffectMode::Starry => 14,
-        EffectMode::Ejection => 15,
-        EffectMode::Kaleidoscope => 16,
-        EffectMode::Music => 17,
-        EffectMode::Scroll => 18,
-        EffectMode::Off => 0,
-    }
+    mode.mode_id()
 }
 
-/// Convert high-level PaletteColor to BY-COMBO palette color index
+/// Convert high-level PaletteColor to hardware palette color index (0..=7)
 pub fn bycombo_palette_color(color: PaletteColor) -> u8 {
-    match color {
-        PaletteColor::Red => 0,
-        PaletteColor::Yellow => 2,
-        PaletteColor::Green => 3,
-        PaletteColor::Cyan => 4,
-        PaletteColor::Blue => 5,
-        PaletteColor::Magenta => 6,
-        PaletteColor::Rainbow | PaletteColor::White => 7,
-    }
+    color as u8
 }
 
 /// Request current 128-byte LED configuration from device via Report ID 6

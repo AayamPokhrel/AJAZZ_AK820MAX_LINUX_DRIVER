@@ -1,5 +1,5 @@
 Name:           ajazz-ak820-max
-Version:        1.1.1
+Version:        1.2.0
 Release:        1%{?dist}
 Summary:        Native Linux driver, GUI studio, and RGB music visualizer for Ajazz AK820 Max
 
@@ -87,6 +87,10 @@ gtk-update-icon-cache -q -t -f %{_datadir}/icons/hicolor || :
 %{_datadir}/icons/hicolor/*/apps/ajazz-ak820-max.png
 
 %changelog
+* Fri Oct 30 2026 Aayam Pokhrel <pokhrelaayam1010@gmail.com> - 1.2.0-1
+- Interactive typing reactive RGB modes in Lighting Effects Studio (Random Gradient Splash, Chaos Roulette, Shockwave, Heatmap, Matrix Rain, Crossfire, Sparks, Aurora).
+- Fixed mismatched hardware effect mode mappings from kb-k600t.xml.
+
 * Mon Oct 26 2026 Aayam Pokhrel <pokhrelaayam1010@gmail.com> - 1.1.1-1
 - 1:1 vendor binary reverse-engineered hardware communication protocol (Report ID 6 Feature Report, 520 bytes).
 - Resolved ENODEV (error 19), dynamic device re-probing, full hardware lighting, sleep timeout, and per-key custom matrix.

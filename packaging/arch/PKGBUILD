@@ -1,6 +1,6 @@
 # Maintainer: Aayam Pokhrel <pokhrelaayam1010@gmail.com>
 pkgname=ajazz-ak820-max
-pkgver=1.1.1
+pkgver=1.2.0
 pkgrel=1
 pkgdesc="Native Linux driver, GUI studio, and RGB music visualizer for Ajazz AK820 Max mechanical keyboards"
 arch=('x86_64' 'aarch64')

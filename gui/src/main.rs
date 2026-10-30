@@ -12,7 +12,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[derive(Parser, Debug)]
 #[command(name = "ak820-gui")]
 #[command(author = "Ajazz Linux Community")]
-#[command(version = "1.1.1")]
+#[command(version = "1.2.0")]
 #[command(about = "Native Linux GUI for Ajazz AK820 Max Keyboard RGB & Music Visualizer")]
 struct CliArgs {
     /// Initial tab to open (effects, music, canvas, hardware)

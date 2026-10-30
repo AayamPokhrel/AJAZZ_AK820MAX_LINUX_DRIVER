@@ -65,7 +65,7 @@
 
           shellHook = ''
             echo "=========================================================="
-            echo " Ajazz AK820 Max Native Linux Studio (v1.1.1) Environment "
+            echo " Ajazz AK820 Max Native Linux Studio (v1.2.0) Environment "
             echo "=========================================================="
             echo "Run 'cargo run --bin ak820-gui' to launch the GUI."
             echo "Run 'cargo run --bin ak820ctl -- status' to probe the keyboard."

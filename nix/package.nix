@@ -17,7 +17,7 @@
 
 rustPlatform.buildRustPackage {
   pname = "ajazz-ak820-max";
-  version = "1.1.1";
+  version = "1.2.0";
 
   src = lib.cleanSource ../.;
 

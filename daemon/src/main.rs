@@ -6,8 +6,9 @@ use ajazz_audio::{AudioCapture, FFT_SIZE, MusicRenderer, SpectrumAnalyzer};
 use ajazz_hid::{AjazzDevice, DeviceError, DeviceStatus, HardwareConnection, PowerState};
 use ajazz_rgb::color::{Color, PaletteColor};
 use ajazz_rgb::effects::{Direction, EffectMode, EffectSettings};
-use ajazz_rgb::layout::{find_key_by_name, TOTAL_LEDS};
+use ajazz_rgb::layout::{find_key_by_evdev_code, find_key_by_name, TOTAL_LEDS};
 use ajazz_rgb::storage::PersistentConfig;
+use ajazz_rgb::typing::{TypingEngine, TypingMode};
 use clap::Parser;
 use ipc::{default_socket_path, DaemonRequest, DaemonResponse};
 use std::path::PathBuf;
@@ -33,6 +34,62 @@ struct Args {
     verbose: bool,
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+struct LinuxInputEvent {
+    tv_sec: libc::time_t,
+    tv_usec: libc::suseconds_t,
+    type_: u16,
+    code: u16,
+    value: i32,
+}
+
+fn find_keyboard_evdev_path() -> Option<PathBuf> {
+    let direct_candidates = [
+        "/dev/input/by-id/usb-BY_Tech_Gaming_Keyboard-event-kbd",
+        "/dev/input/by-id/usb-BY_Tech_Gaming_Keyboard-if01-event-kbd",
+    ];
+    for p in direct_candidates {
+        let path = PathBuf::from(p);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir("/dev/input/by-id") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.contains("event-kbd") && (name.contains("BY_Tech") || name.contains("Gaming_Keyboard") || name.contains("AK820")) {
+                return Some(entry.path());
+            }
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir("/dev/input") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("event") {
+                let path = entry.path();
+                if let Ok(file) = std::fs::File::open(&path) {
+                    use std::os::unix::io::AsRawFd;
+                    let fd = file.as_raw_fd();
+                    let mut name_buf = [0u8; 256];
+                    const EVIOCGNAME_256: libc::c_ulong = 0x81004506;
+                    let res = unsafe { libc::ioctl(fd, EVIOCGNAME_256, name_buf.as_mut_ptr()) };
+                    if res > 0 {
+                        let dev_name = String::from_utf8_lossy(&name_buf[..res as usize]);
+                        if dev_name.contains("Gaming Keyboard") || dev_name.contains("AK820") || dev_name.contains("BY Tech") {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 struct DaemonState {
     device: Option<Arc<AjazzDevice>>,
     preferred_mode: Option<HardwareConnection>,
@@ -49,6 +106,11 @@ struct DaemonState {
     custom_brightness: Arc<std::sync::atomic::AtomicU8>,
     custom_notify: Arc<parking_lot::Condvar>,
     custom_lock: Arc<parking_lot::Mutex<()>>,
+    typing_active: Arc<AtomicBool>,
+    typing_handle: Option<std::thread::JoinHandle<()>>,
+    typing_input_handle: Option<std::thread::JoinHandle<()>>,
+    typing_engine: Arc<parking_lot::Mutex<TypingEngine>>,
+    typing_brightness: Arc<std::sync::atomic::AtomicU8>,
     last_settings: EffectSettings,
     persistent_config: PersistentConfig,
 }
@@ -83,6 +145,11 @@ impl DaemonState {
             custom_brightness: Arc::new(std::sync::atomic::AtomicU8::new(custom_bri)),
             custom_notify: Arc::new(parking_lot::Condvar::new()),
             custom_lock: Arc::new(parking_lot::Mutex::new(())),
+            typing_active: Arc::new(AtomicBool::new(false)),
+            typing_handle: None,
+            typing_input_handle: None,
+            typing_engine: Arc::new(parking_lot::Mutex::new(TypingEngine::new(TypingMode::RandomGradientSplash))),
+            typing_brightness: Arc::new(std::sync::atomic::AtomicU8::new(5)),
             last_settings,
             persistent_config: cfg,
         }
@@ -144,9 +211,166 @@ impl DaemonState {
         }
     }
 
+    fn stop_typing(&mut self) {
+        if self.typing_active.swap(false, Ordering::SeqCst) {
+            info!("Stopping background interactive typing stream");
+            if let Some(h) = self.typing_handle.take() {
+                let _ = h.join();
+            }
+            if let Some(ih) = self.typing_input_handle.take() {
+                let _ = ih.join();
+            }
+        }
+    }
+
     fn stop_all_streaming(&mut self) {
         self.stop_music();
         self.stop_custom();
+        self.stop_typing();
+    }
+
+    fn start_typing_stream(&mut self, mode: TypingMode, brightness: u8) {
+        if self.typing_active.load(Ordering::SeqCst) {
+            self.typing_engine.lock().set_mode(mode);
+            self.typing_brightness.store(brightness, Ordering::Relaxed);
+            return;
+        }
+
+        self.stop_all_streaming();
+
+        let dev = match self.ensure_device() {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("Cannot start typing stream without active device: {}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = dev.enter_live_music_mode() {
+            warn!("Warning initializing live frame mode for typing: {}", e);
+        }
+
+        self.typing_engine.lock().set_mode(mode);
+        self.typing_brightness.store(brightness, Ordering::Relaxed);
+        self.typing_active.store(true, Ordering::SeqCst);
+
+        let active_render = Arc::clone(&self.typing_active);
+        let active_input = Arc::clone(&self.typing_active);
+        let engine_render = Arc::clone(&self.typing_engine);
+        let engine_input = Arc::clone(&self.typing_engine);
+        let bri_arc = Arc::clone(&self.typing_brightness);
+        let dev_clone = Arc::clone(&dev);
+
+        // 1. evdev keyboard input listener thread
+        let input_handle = std::thread::spawn(move || {
+            info!("Daemon evdev keyboard input listener thread started");
+            while active_input.load(Ordering::SeqCst) {
+                let path_opt = find_keyboard_evdev_path();
+                let path = match path_opt {
+                    Some(p) => p,
+                    None => {
+                        std::thread::sleep(Duration::from_millis(500));
+                        continue;
+                    }
+                };
+
+                let cpath = match std::ffi::CString::new(path.to_string_lossy().as_bytes()) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        std::thread::sleep(Duration::from_millis(500));
+                        continue;
+                    }
+                };
+
+                let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+                if fd < 0 {
+                    std::thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+
+                info!("Connected evdev input stream to {}", path.display());
+
+                let mut pollfd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+
+                let event_size = std::mem::size_of::<LinuxInputEvent>();
+                let mut ev_buf = [0u8; 24];
+
+                while active_input.load(Ordering::SeqCst) {
+                    let poll_res = unsafe { libc::poll(&mut pollfd, 1, 25) };
+                    if poll_res > 0 && (pollfd.revents & libc::POLLIN) != 0 {
+                        loop {
+                            let n = unsafe {
+                                libc::read(fd, ev_buf.as_mut_ptr() as *mut libc::c_void, event_size)
+                            };
+                            if n as usize == event_size {
+                                let ev: LinuxInputEvent = unsafe {
+                                    std::ptr::read_unaligned(ev_buf.as_ptr() as *const LinuxInputEvent)
+                                };
+                                if ev.type_ == 1 && (ev.value == 1 || ev.value == 2) {
+                                    if let Some(key) = find_key_by_evdev_code(ev.code) {
+                                        engine_input.lock().on_key_down(
+                                            key.hw_idx,
+                                            key.row,
+                                            key.col,
+                                            key.rect.center_x(),
+                                            key.rect.center_y(),
+                                        );
+                                    }
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    } else if poll_res < 0 {
+                        break;
+                    }
+                }
+
+                unsafe {
+                    libc::close(fd);
+                }
+            }
+            info!("Daemon evdev keyboard input listener thread exited");
+        });
+
+        // 2. High-speed 60 FPS live frame renderer thread
+        let render_handle = std::thread::spawn(move || {
+            info!("Daemon Interactive Typing live stream thread active (60 FPS)");
+            let mut last_instant = Instant::now();
+
+            while active_render.load(Ordering::SeqCst) {
+                let now = Instant::now();
+                let dt = now.duration_since(last_instant).as_secs_f32().clamp(0.001, 0.05);
+                last_instant = now;
+
+                let frame = {
+                    let mut eng = engine_render.lock();
+                    let rendered = eng.update(dt);
+                    let bri = bri_arc.load(Ordering::Relaxed).clamp(1, 5) as f32 / 5.0;
+                    let mut scaled = [Color::BLACK; TOTAL_LEDS];
+                    for i in 0..TOTAL_LEDS {
+                        scaled[i] = rendered[i].scale(bri);
+                    }
+                    scaled
+                };
+
+                let _ = dev_clone.send_live_frame(&frame);
+
+                let frame_dur = Duration::from_millis(16);
+                let elapsed = now.elapsed();
+                if elapsed < frame_dur {
+                    std::thread::sleep(frame_dur - elapsed);
+                }
+            }
+            info!("Daemon Interactive Typing live stream thread stopped cleanly");
+        });
+
+        self.typing_handle = Some(render_handle);
+        self.typing_input_handle = Some(input_handle);
     }
 
     fn start_custom_stream(&mut self) {
@@ -154,6 +378,7 @@ impl DaemonState {
             return;
         }
         self.stop_music();
+        self.stop_typing();
 
         let dev = match self.ensure_device() {
             Ok(d) => d,
@@ -225,7 +450,9 @@ impl DaemonState {
         } else {
             let settings = EffectSettings::from(self.persistent_config.lighting.clone());
             self.last_settings = settings.clone();
-            if let Ok(dev) = self.ensure_device() {
+            if let Some(typing_mode) = settings.mode.to_typing_mode() {
+                self.start_typing_stream(typing_mode, settings.brightness);
+            } else if let Ok(dev) = self.ensure_device() {
                 let _ = dev.set_lighting(&settings);
             }
         }
@@ -358,7 +585,10 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
         DaemonRequest::Ping => DaemonResponse::Pong,
 
         DaemonRequest::GetStatus => {
-            if st.music_active.load(Ordering::SeqCst) || st.custom_active.load(Ordering::SeqCst) {
+            if st.music_active.load(Ordering::SeqCst)
+                || st.custom_active.load(Ordering::SeqCst)
+                || st.typing_active.load(Ordering::SeqCst)
+            {
                 let cached = DeviceStatus {
                     battery_percentage: Some(100),
                     power_state: PowerState::FullyCharged,
@@ -412,7 +642,6 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
             direction,
             color,
         } => {
-            st.stop_all_streaming();
             let effect_mode = match EffectMode::from_name(&mode) {
                 Some(m) => m,
                 None => {
@@ -437,10 +666,13 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
                 (PaletteColor::Rainbow, None)
             };
 
+            let bri = brightness.unwrap_or(5);
+            let spd = speed.unwrap_or(4);
+
             let settings = EffectSettings {
                 mode: effect_mode,
-                brightness: brightness.unwrap_or(5),
-                speed: speed.unwrap_or(4),
+                brightness: bri,
+                speed: spd,
                 direction: dir,
                 palette_color: palette,
                 custom_color: custom_c,
@@ -452,10 +684,20 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
             st.persistent_config.lighting = settings.clone().into();
             let _ = st.persistent_config.save();
 
+            // Check if this is an interactive software typing mode
+            if let Some(typing_mode) = effect_mode.to_typing_mode() {
+                st.start_typing_stream(typing_mode, bri);
+                return DaemonResponse::Ok {
+                    message: format!("Activated interactive typing effect: {}", typing_mode.name()),
+                };
+            }
+
+            st.stop_all_streaming();
+
             match st.ensure_device() {
                 Ok(dev) => match dev.set_lighting(&settings) {
                     Ok(_) => DaemonResponse::Ok {
-                        message: format!("Set effect to {:?}", effect_mode),
+                        message: format!("Set hardware effect to {:?}", effect_mode),
                     },
                     Err(e) => {
                         st.device = None;
