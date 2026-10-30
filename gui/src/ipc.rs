@@ -67,6 +67,11 @@ pub enum DaemonRequest {
         colors: Vec<String>,
         brightness: Option<u8>,
     },
+    UpdateCustomLive {
+        colors: Vec<String>,
+        brightness: Option<u8>,
+    },
+    GetConfig,
     SetSleep {
         minutes: u8,
     },
@@ -80,6 +85,7 @@ pub enum DaemonResponse {
     Pong,
     Status(DeviceStatus),
     Devices(Vec<DiscoveredDevice>),
+    Config(ajazz_rgb::storage::PersistentConfig),
     Error { message: String },
 }
 
@@ -455,6 +461,24 @@ impl HardwareCoordinator {
             Ok(())
         } else {
             Err("No keyboard connection available".to_string())
+        }
+    }
+
+    /// Update custom LED matrix live without blocking (<1ms latency)
+    pub fn update_custom_live(&mut self, matrix: &[Color; TOTAL_LEDS], brightness: u8) {
+        self.custom_matrix = *matrix;
+
+        if self.mode == ConnectionMode::ConnectedDaemon {
+            let colors: Vec<String> = matrix.iter().map(|c| c.to_hex()).collect();
+            let req = DaemonRequest::UpdateCustomLive {
+                colors,
+                brightness: Some(brightness),
+            };
+            let _ = self.cmd_tx.send(CoordinatorCmd::DaemonReq(req));
+        } else if self.direct_device.is_some() {
+            let _ = self
+                .cmd_tx
+                .send(CoordinatorCmd::DirectSetCustomMatrix(*matrix, brightness));
         }
     }
 

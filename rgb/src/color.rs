@@ -182,4 +182,42 @@ impl PaletteColor {
             _ => Self::Rainbow,
         }
     }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Red => "red",
+            Self::Green => "green",
+            Self::Blue => "blue",
+            Self::Yellow => "yellow",
+            Self::Magenta => "magenta",
+            Self::Cyan => "cyan",
+            Self::White => "white",
+            Self::Rainbow => "rainbow",
+        }
+    }
+
+    pub fn closest(c: Color) -> Self {
+        let presets = [
+            (Self::Red, Color::RED),
+            (Self::Green, Color::GREEN),
+            (Self::Blue, Color::BLUE),
+            (Self::Yellow, Color::YELLOW),
+            (Self::Magenta, Color::MAGENTA),
+            (Self::Cyan, Color::CYAN),
+            (Self::White, Color::WHITE),
+        ];
+        let mut best = Self::Rainbow;
+        let mut min_dist = u32::MAX;
+        for (p, target) in presets {
+            let dr = (c.r as i32 - target.r as i32).abs() as u32;
+            let dg = (c.g as i32 - target.g as i32).abs() as u32;
+            let db = (c.b as i32 - target.b as i32).abs() as u32;
+            let dist = dr * dr + dg * dg + db * db;
+            if dist < min_dist {
+                min_dist = dist;
+                best = p;
+            }
+        }
+        best
+    }
 }

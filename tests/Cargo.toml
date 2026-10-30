@@ -9,6 +9,7 @@ ajazz-hid = { path = "../hid" }
 ajazz-rgb = { path = "../rgb" }
 ajazz-audio = { path = "../audio" }
 tokio.workspace = true
+serde_json.workspace = true
 
 [[test]]
 name = "protocol_tests"
@@ -21,3 +22,8 @@ path = "audio_fft_tests.rs"
 [[test]]
 name = "layout_tests"
 path = "layout_tests.rs"
+
+[[test]]
+name = "storage_and_generator_tests"
+path = "storage_and_generator_tests.rs"
+

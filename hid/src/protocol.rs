@@ -187,24 +187,24 @@ pub fn parse_bycombo_status(feature_buf: &[u8]) -> Option<DeviceStatus> {
 pub fn bycombo_hw_mode(mode: EffectMode) -> u8 {
     match mode {
         EffectMode::Static => 1,
-        EffectMode::Breathing => 2,
-        EffectMode::SineWave => 3,
-        EffectMode::Spectrum => 4,
-        EffectMode::RippleLr => 5,
-        EffectMode::RippleUd => 6,
-        EffectMode::Starry => 7,
-        EffectMode::Ejection => 8,
-        EffectMode::Kaleidoscope => 9,
-        EffectMode::Cross => 10,
-        EffectMode::KeyBreathing => 11,
-        EffectMode::Scroll => 12,
-        EffectMode::TopBottom => 13,
-        EffectMode::Rain => 14,
-        EffectMode::Windmill => 15,
-        EffectMode::Galloping => 16,
+        EffectMode::Spectrum => 2,
+        EffectMode::Breathing => 3,
+        EffectMode::Custom => 4,
+        EffectMode::Windmill => 5,
+        EffectMode::SineWave => 6,
+        EffectMode::Screen => 7,
+        EffectMode::TopBottom => 8,
+        EffectMode::Galloping => 9,
+        EffectMode::Rain => 10,
+        EffectMode::RippleLr => 11,
+        EffectMode::RippleUd => 11,
+        EffectMode::Cross => 12,
+        EffectMode::KeyBreathing => 13,
+        EffectMode::Starry => 14,
+        EffectMode::Ejection => 15,
+        EffectMode::Kaleidoscope => 16,
         EffectMode::Music => 17,
-        EffectMode::Screen => 18,
-        EffectMode::Custom => 21,
+        EffectMode::Scroll => 18,
         EffectMode::Off => 0,
     }
 }
@@ -259,15 +259,12 @@ pub fn bycombo_wired_set_led_packet(current_led_128: Option<&[u8]>, settings: &E
     let bri = (settings.brightness.clamp(1, 5) - 1) & 0x0F;
     let spd = (settings.speed.clamp(1, 5) - 1) & 0x0F;
     let dir = if settings.direction == Direction::Left { 0x80 } else { 0x00 };
-    let col = match settings.palette_color {
-        PaletteColor::Red => 0,
-        PaletteColor::Yellow => 2,
-        PaletteColor::Green => 3,
-        PaletteColor::Cyan => 4,
-        PaletteColor::Blue => 5,
-        PaletteColor::Magenta => 6,
-        PaletteColor::Rainbow | PaletteColor::White => 7,
+    let effective_palette = if let Some(custom) = settings.custom_color {
+        PaletteColor::closest(custom)
+    } else {
+        settings.palette_color
     };
+    let col = bycombo_palette_color(effective_palette);
 
     pkt[8 + 1] = spd;
     pkt[8 + 2] = bri;
@@ -338,34 +335,10 @@ pub fn bycombo_wired_get_matrix_request() -> Vec<u8> {
     req
 }
 
-/// Build full Report ID 6 SetLedRgbTab packet (520 bytes) for BY-COMBO Wired mode
-/// 1:1 vendor implementation from CDevG5KB::AccessData & CDevG5KB::SetLedRgbTab
+/// Build full Report ID 6 custom matrix packet (520 bytes) for BY-COMBO Wired mode
+/// Uses the proven 1:1 vendor live packet transmission format
 pub fn bycombo_wired_matrix_packet(matrix: &[Color; TOTAL_LEDS]) -> Vec<u8> {
-    let mut pkt = vec![0u8; 520];
-    pkt[0] = 0x06; // Report ID 6
-    pkt[1] = 0x0A; // cmd = 0x0A (SetLedRgbTab)
-    pkt[2] = 0x01; // nOper = 1 (Write)
-    pkt[3] = 0x00;
-    pkt[4] = 0x01; // total_chunks = 1
-    pkt[5] = 0x00; // chunk_index = 0
-    pkt[6] = 0x00; // len lo = 512 (0x0200)
-    pkt[7] = 0x02; // len hi = 2
-
-    // Populate keys directly by hardware LED matrix index
-    for (i, c) in matrix.iter().enumerate().take(126) {
-        let off = 8 + i * 3;
-        if off + 2 < 8 + 510 {
-            pkt[off] = c.r;
-            pkt[off + 1] = c.g;
-            pkt[off + 2] = c.b;
-        }
-    }
-
-    // CRC / Magic trailer at end of 512-byte payload
-    pkt[8 + 510] = 0x5A;
-    pkt[8 + 511] = 0xA5;
-
-    pkt
+    bycombo_wired_live_music_packet(matrix)
 }
 
 

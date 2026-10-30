@@ -7,6 +7,7 @@ use ajazz_hid::{AjazzDevice, DeviceError, DeviceStatus, HardwareConnection, Powe
 use ajazz_rgb::color::{Color, PaletteColor};
 use ajazz_rgb::effects::{Direction, EffectMode, EffectSettings};
 use ajazz_rgb::layout::{find_key_by_name, TOTAL_LEDS};
+use ajazz_rgb::storage::PersistentConfig;
 use clap::Parser;
 use ipc::{default_socket_path, DaemonRequest, DaemonResponse};
 use std::path::PathBuf;
@@ -42,12 +43,30 @@ struct DaemonState {
     music_config: Arc<parking_lot::RwLock<VisualizerConfig>>,
     music_source: Arc<parking_lot::RwLock<AudioSource>>,
     music_action_trigger: Arc<std::sync::atomic::AtomicUsize>,
-    custom_matrix: [Color; TOTAL_LEDS],
+    custom_active: Arc<AtomicBool>,
+    custom_hid_handle: Option<std::thread::JoinHandle<()>>,
+    custom_matrix: Arc<parking_lot::RwLock<[Color; TOTAL_LEDS]>>,
+    custom_brightness: Arc<std::sync::atomic::AtomicU8>,
+    custom_notify: Arc<parking_lot::Condvar>,
+    custom_lock: Arc<parking_lot::Mutex<()>>,
     last_settings: EffectSettings,
+    persistent_config: PersistentConfig,
 }
 
 impl DaemonState {
     fn new(preferred_mode: Option<HardwareConnection>) -> Self {
+        let cfg = PersistentConfig::load();
+        let last_settings = EffectSettings::from(cfg.lighting.clone());
+        let mut custom_mat = [Color::BLACK; TOTAL_LEDS];
+        for (i, hex) in cfg.canvas.colors.iter().enumerate() {
+            if i < TOTAL_LEDS {
+                if let Ok(c) = Color::from_str(hex) {
+                    custom_mat[i] = c;
+                }
+            }
+        }
+        let custom_bri = cfg.canvas.brightness;
+
         Self {
             device: None,
             preferred_mode,
@@ -58,8 +77,14 @@ impl DaemonState {
             music_config: Arc::new(parking_lot::RwLock::new(VisualizerConfig::default())),
             music_source: Arc::new(parking_lot::RwLock::new(AudioSource::SystemLoopback)),
             music_action_trigger: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            custom_matrix: [Color::BLACK; TOTAL_LEDS],
-            last_settings: EffectSettings::default(),
+            custom_active: Arc::new(AtomicBool::new(false)),
+            custom_hid_handle: None,
+            custom_matrix: Arc::new(parking_lot::RwLock::new(custom_mat)),
+            custom_brightness: Arc::new(std::sync::atomic::AtomicU8::new(custom_bri)),
+            custom_notify: Arc::new(parking_lot::Condvar::new()),
+            custom_lock: Arc::new(parking_lot::Mutex::new(())),
+            last_settings,
+            persistent_config: cfg,
         }
     }
 
@@ -106,10 +131,109 @@ impl DaemonState {
             if let Some(hid_handle) = self.music_hid_handle.take() {
                 let _ = hid_handle.join();
             }
-            let last_settings = self.last_settings.clone();
-            if let Ok(dev) = self.ensure_device() {
-                let _ = dev.set_lighting(&last_settings);
+        }
+    }
+
+    fn stop_custom(&mut self) {
+        if self.custom_active.swap(false, Ordering::SeqCst) {
+            info!("Stopping background custom matrix live stream");
+            self.custom_notify.notify_all();
+            if let Some(h) = self.custom_hid_handle.take() {
+                let _ = h.join();
             }
+        }
+    }
+
+    fn stop_all_streaming(&mut self) {
+        self.stop_music();
+        self.stop_custom();
+    }
+
+    fn start_custom_stream(&mut self) {
+        if self.custom_active.load(Ordering::SeqCst) {
+            return;
+        }
+        self.stop_music();
+
+        let dev = match self.ensure_device() {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("Cannot start custom stream without active device: {}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = dev.enter_live_music_mode() {
+            warn!("Warning initializing live frame mode for custom canvas: {}", e);
+        }
+
+        self.custom_active.store(true, Ordering::SeqCst);
+        let active = Arc::clone(&self.custom_active);
+        let matrix_arc = Arc::clone(&self.custom_matrix);
+        let bri_arc = Arc::clone(&self.custom_brightness);
+        let notify = Arc::clone(&self.custom_notify);
+        let lock = Arc::clone(&self.custom_lock);
+        let dev_clone = Arc::clone(&dev);
+
+        let handle = std::thread::spawn(move || {
+            info!("Daemon Custom Canvas live stream thread active (30 FPS)");
+            while active.load(Ordering::SeqCst) {
+                let frame = {
+                    let m = matrix_arc.read();
+                    let bri = bri_arc.load(Ordering::Relaxed).clamp(1, 5) as f32 / 5.0;
+                    let mut scaled = [Color::BLACK; TOTAL_LEDS];
+                    for i in 0..TOTAL_LEDS {
+                        scaled[i] = m[i].scale(bri);
+                    }
+                    scaled
+                };
+
+                let _ = dev_clone.send_live_frame(&frame);
+
+                // Wait ~30ms or wake up immediately if frame updated
+                let mut guard = lock.lock();
+                notify.wait_for(&mut guard, Duration::from_millis(30));
+            }
+            info!("Daemon Custom Canvas live stream thread stopped cleanly");
+        });
+
+        self.custom_hid_handle = Some(handle);
+    }
+
+    fn apply_saved_state(&mut self) {
+        let cat = self.persistent_config.active_category.clone();
+        if cat == "canvas" || self.persistent_config.canvas.is_active {
+            info!("Restoring saved Custom Canvas lighting on hardware...");
+            {
+                let mut m = self.custom_matrix.write();
+                for (i, hex) in self.persistent_config.canvas.colors.iter().enumerate() {
+                    if i < TOTAL_LEDS {
+                        if let Ok(c) = Color::from_str(hex) {
+                            m[i] = c;
+                        }
+                    }
+                }
+            }
+            self.custom_brightness.store(self.persistent_config.canvas.brightness, Ordering::Relaxed);
+            self.start_custom_stream();
+        } else if cat == "music" {
+            // Apply fallback lighting effect until visualizer is explicitly active
+            let settings = EffectSettings::from(self.persistent_config.lighting.clone());
+            if let Ok(dev) = self.ensure_device() {
+                let _ = dev.set_lighting(&settings);
+            }
+        } else {
+            let settings = EffectSettings::from(self.persistent_config.lighting.clone());
+            self.last_settings = settings.clone();
+            if let Ok(dev) = self.ensure_device() {
+                let _ = dev.set_lighting(&settings);
+            }
+        }
+
+        // Apply saved sleep timeout
+        let sleep_mins = self.persistent_config.device.sleep_minutes;
+        if let Ok(dev) = self.ensure_device() {
+            let _ = dev.set_sleep_timeout(sleep_mins);
         }
     }
 }
@@ -146,11 +270,14 @@ async fn main() -> anyhow::Result<()> {
     {
         let mut st = state.lock().await;
         match st.ensure_device() {
-            Ok(dev) => info!(
-                "Connected to device: {} ({:?})",
-                dev.info().device_name,
-                dev.connection_mode()
-            ),
+            Ok(dev) => {
+                info!(
+                    "Connected to device: {} ({:?})",
+                    dev.info().device_name,
+                    dev.connection_mode()
+                );
+                st.apply_saved_state();
+            }
             Err(e) => warn!("Initial device connection failed: {}. Will retry on demand.", e),
         }
     }
@@ -183,7 +310,7 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Cleaning up daemon resources");
     let mut st = state.lock().await;
-    st.stop_music();
+    st.stop_all_streaming();
     let _ = std::fs::remove_file(&socket_path);
     info!("Daemon terminated gracefully");
 
@@ -231,7 +358,7 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
         DaemonRequest::Ping => DaemonResponse::Pong,
 
         DaemonRequest::GetStatus => {
-            if st.music_active.load(Ordering::SeqCst) {
+            if st.music_active.load(Ordering::SeqCst) || st.custom_active.load(Ordering::SeqCst) {
                 let cached = DeviceStatus {
                     battery_percentage: Some(100),
                     power_state: PowerState::FullyCharged,
@@ -285,7 +412,7 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
             direction,
             color,
         } => {
-            st.stop_music();
+            st.stop_all_streaming();
             let effect_mode = match EffectMode::from_name(&mode) {
                 Some(m) => m,
                 None => {
@@ -320,6 +447,10 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
             };
 
             st.last_settings = settings.clone();
+            st.persistent_config.active_category = "effect".to_string();
+            st.persistent_config.canvas.is_active = false;
+            st.persistent_config.lighting = settings.clone().into();
+            let _ = st.persistent_config.save();
 
             match st.ensure_device() {
                 Ok(dev) => match dev.set_lighting(&settings) {
@@ -340,7 +471,7 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
         }
 
         DaemonRequest::SetStatic { color } => {
-            st.stop_music();
+            st.stop_all_streaming();
             let c = match Color::from_str(&color) {
                 Ok(c) => c,
                 Err(e) => {
@@ -359,6 +490,10 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
                 custom_color: Some(c),
             };
             st.last_settings = settings.clone();
+            st.persistent_config.active_category = "effect".to_string();
+            st.persistent_config.canvas.is_active = false;
+            st.persistent_config.lighting = settings.clone().into();
+            let _ = st.persistent_config.save();
 
             match st.ensure_device() {
                 Ok(dev) => match dev.set_lighting(&settings) {
@@ -423,6 +558,22 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
                 None => AudioSource::SystemLoopback,
             };
 
+            // Save persistent config
+            st.persistent_config.active_category = "music".to_string();
+            st.persistent_config.canvas.is_active = false;
+            st.persistent_config.music.style = style.clone();
+            if let Some(ref cm) = color_mode {
+                st.persistent_config.music.color_mode = cm.clone();
+            }
+            st.persistent_config.music.sensitivity = sens;
+            st.persistent_config.music.noise_gate = gate;
+            st.persistent_config.music.decay_speed = decay_spd;
+            st.persistent_config.music.peak_hold = pk_hold;
+            st.persistent_config.music.target_fps = target_fps;
+            st.persistent_config.music.morph_speed = morph;
+            st.persistent_config.music.audio_source = audio_src.name().to_string();
+            let _ = st.persistent_config.save();
+
             // HOT-RELOAD CHECK: If already active and source is identical, update config in-place immediately without stopping!
             if st.music_active.load(Ordering::SeqCst) && *st.music_source.read() == audio_src {
                 {
@@ -442,7 +593,7 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
             }
 
             // Otherwise, start or restart capture stream
-            st.stop_music();
+            st.stop_all_streaming();
             *st.music_source.write() = audio_src.clone();
             {
                 let mut cfg = st.music_config.write();
@@ -584,6 +735,12 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
 
         DaemonRequest::StopMusic => {
             st.stop_music();
+            let last = st.last_settings.clone();
+            if let Ok(dev) = st.ensure_device() {
+                let _ = dev.set_lighting(&last);
+            }
+            st.persistent_config.active_category = "effect".to_string();
+            let _ = st.persistent_config.save();
             DaemonResponse::Ok {
                 message: "Music visualization stopped".to_string(),
             }
@@ -604,7 +761,6 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
         }
 
         DaemonRequest::SetCustomKey { key, color } => {
-            st.stop_music();
             let c = match Color::from_str(&color) {
                 Ok(c) => c,
                 Err(e) => {
@@ -617,23 +773,21 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
             let key_opt = find_key_by_name(&key);
             match key_opt {
                 Some(k) => {
-                    st.custom_matrix[k.led_idx] = c;
-                    let matrix = st.custom_matrix;
-                    match st.ensure_device() {
-                        Ok(dev) => match dev.set_custom_matrix(&matrix, 5) {
-                            Ok(_) => DaemonResponse::Ok {
-                                message: format!("Set key '{}' to {}", k.label, c),
-                            },
-                            Err(e) => {
-                                st.device = None;
-                                DaemonResponse::Error {
-                                    message: format!("Failed to upload custom matrix: {}", e),
-                                }
-                            }
-                        },
-                        Err(e) => DaemonResponse::Error {
-                            message: format!("Device not connected: {}", e),
-                        },
+                    {
+                        let mut m = st.custom_matrix.write();
+                        m[k.hw_idx] = c;
+                    }
+                    st.start_custom_stream();
+                    st.custom_notify.notify_all();
+
+                    st.persistent_config.active_category = "canvas".to_string();
+                    st.persistent_config.canvas.is_active = true;
+                    let current_colors: Vec<String> = st.custom_matrix.read().iter().map(|c| c.to_hex()).collect();
+                    st.persistent_config.canvas.colors = current_colors;
+                    let _ = st.persistent_config.save();
+
+                    DaemonResponse::Ok {
+                        message: format!("Set key '{}' to {}", k.label, c),
                     }
                 }
                 None => DaemonResponse::Error {
@@ -643,25 +797,75 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
         }
 
         DaemonRequest::SetCustomMatrix { colors, brightness } => {
-            st.stop_music();
             let bri = brightness.unwrap_or(5);
-            for (i, c_str) in colors.iter().enumerate() {
-                if i < TOTAL_LEDS {
-                    if let Ok(c) = Color::from_str(c_str) {
-                        st.custom_matrix[i] = c;
+            st.custom_brightness.store(bri, Ordering::Relaxed);
+            {
+                let mut m = st.custom_matrix.write();
+                for (i, c_str) in colors.iter().enumerate() {
+                    if i < TOTAL_LEDS {
+                        if let Ok(c) = Color::from_str(c_str) {
+                            m[i] = c;
+                        }
                     }
                 }
             }
-            let matrix = st.custom_matrix;
+            st.start_custom_stream();
+            st.custom_notify.notify_all();
+
+            st.persistent_config.active_category = "canvas".to_string();
+            st.persistent_config.canvas.is_active = true;
+            st.persistent_config.canvas.brightness = bri;
+            st.persistent_config.canvas.colors = colors;
+            let _ = st.persistent_config.save();
+
+            DaemonResponse::Ok {
+                message: "Custom matrix saved and applied to hardware".to_string(),
+            }
+        }
+
+        DaemonRequest::UpdateCustomLive { colors, brightness } => {
+            let bri = brightness.unwrap_or(5);
+            st.custom_brightness.store(bri, Ordering::Relaxed);
+            {
+                let mut m = st.custom_matrix.write();
+                for (i, c_str) in colors.iter().enumerate() {
+                    if i < TOTAL_LEDS {
+                        if let Ok(c) = Color::from_str(c_str) {
+                            m[i] = c;
+                        }
+                    }
+                }
+            }
+            st.start_custom_stream();
+            st.custom_notify.notify_all();
+
+            st.persistent_config.active_category = "canvas".to_string();
+            st.persistent_config.canvas.is_active = true;
+            st.persistent_config.canvas.brightness = bri;
+            st.persistent_config.canvas.colors = colors;
+            let _ = st.persistent_config.save();
+
+            DaemonResponse::Ok {
+                message: "Live custom matrix updated (<1ms latency)".to_string(),
+            }
+        }
+
+        DaemonRequest::GetConfig => {
+            DaemonResponse::Config(st.persistent_config.clone())
+        }
+
+        DaemonRequest::SetSleep { minutes } => {
+            st.persistent_config.device.sleep_minutes = minutes;
+            let _ = st.persistent_config.save();
             match st.ensure_device() {
-                Ok(dev) => match dev.set_custom_matrix(&matrix, bri) {
+                Ok(dev) => match dev.set_sleep_timeout(minutes) {
                     Ok(_) => DaemonResponse::Ok {
-                        message: "Custom matrix uploaded successfully".to_string(),
+                        message: format!("Set sleep timeout to {} min", minutes),
                     },
                     Err(e) => {
                         st.device = None;
                         DaemonResponse::Error {
-                            message: format!("Failed to upload custom matrix: {}", e),
+                            message: format!("Failed to set sleep timeout: {}", e),
                         }
                     }
                 },
@@ -671,25 +875,8 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
             }
         }
 
-        DaemonRequest::SetSleep { minutes } => match st.ensure_device() {
-            Ok(dev) => match dev.set_sleep_timeout(minutes) {
-                Ok(_) => DaemonResponse::Ok {
-                    message: format!("Set sleep timeout to {} min", minutes),
-                },
-                Err(e) => {
-                    st.device = None;
-                    DaemonResponse::Error {
-                        message: format!("Failed to set sleep timeout: {}", e),
-                    }
-                }
-            },
-            Err(e) => DaemonResponse::Error {
-                message: format!("Device not connected: {}", e),
-            },
-        },
-
         DaemonRequest::Shutdown => {
-            st.stop_music();
+            st.stop_all_streaming();
             std::process::exit(0);
         }
     }

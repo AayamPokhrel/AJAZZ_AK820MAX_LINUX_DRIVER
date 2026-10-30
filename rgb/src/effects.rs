@@ -11,75 +11,76 @@ pub enum Direction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectMode {
-    RippleLr = 1,
-    Starry = 2,
-    RippleUd = 3,
-    Ejection = 4,
-    Spectrum = 5,
-    Kaleidoscope = 6,
-    Static = 7,
-    Breathing = 8,
-    Cross = 9,
-    KeyBreathing = 11,
-    Scroll = 12,
-    TopBottom = 15,
-    Rain = 16,
-    Windmill = 17,
-    SineWave = 18,
-    Galloping = 19,
-    Music = 22,
-    Screen = 23,
-    Custom = 24,
-    Off = 25,
+    Static = 1,
+    Spectrum = 2,
+    Breathing = 3,
+    Custom = 4,
+    Windmill = 5,
+    SineWave = 6,
+    Screen = 7,
+    TopBottom = 8,
+    Galloping = 9,
+    Rain = 10,
+    RippleLr = 11,
+    RippleUd = 12,
+    Cross = 13,
+    KeyBreathing = 14,
+    Starry = 15,
+    Ejection = 16,
+    Kaleidoscope = 17,
+    Music = 18,
+    Scroll = 19,
+    Off = 20,
 }
 
 impl EffectMode {
     pub fn mode_id(self) -> u8 {
         match self {
-            Self::RippleLr => 1,
-            Self::Starry => 2,
-            Self::RippleUd => 3,
-            Self::Ejection => 4,
-            Self::Spectrum => 5,
-            Self::Kaleidoscope => 6,
-            Self::Static => 7,
-            Self::Breathing => 8,
-            Self::Cross => 9,
-            Self::KeyBreathing => 11,
-            Self::Scroll => 12,
-            Self::TopBottom => 15,
-            Self::Rain => 16,
-            Self::Windmill => 17,
-            Self::SineWave => 18,
-            Self::Galloping => 19,
-            Self::Music => 22,
-            Self::Screen => 23,
-            Self::Custom => 24,
-            Self::Off => 20,
+            Self::Static => 1,
+            Self::Spectrum => 2,
+            Self::Breathing => 3,
+            Self::Custom => 4,
+            Self::Windmill => 5,
+            Self::SineWave => 6,
+            Self::Screen => 7,
+            Self::TopBottom => 8,
+            Self::Galloping => 9,
+            Self::Rain => 10,
+            Self::RippleLr => 11,
+            Self::RippleUd => 11,
+            Self::Cross => 12,
+            Self::KeyBreathing => 13,
+            Self::Starry => 14,
+            Self::Ejection => 15,
+            Self::Kaleidoscope => 16,
+            Self::Music => 17,
+            Self::Scroll => 18,
+            Self::Off => 0,
         }
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_lowercase().replace(['-', '_', ' '], "").as_str() {
-            "static" | "fixed" | "constant" => Some(Self::Static),
+            "static" | "fixed" | "constant" | "fixedon" => Some(Self::Static),
+            "spectrum" | "rainbow" => Some(Self::Spectrum),
             "breathing" | "respire" | "breathe" => Some(Self::Breathing),
+            "custom" | "perkey" | "selfdefine" => Some(Self::Custom),
+            "windmill" | "rotatingwindmill" => Some(Self::Windmill),
             "wave" | "sinewave" | "sine" => Some(Self::SineWave),
-            "rainbow" | "spectrum" => Some(Self::Spectrum),
-            "ripple" | "ripplelr" => Some(Self::RippleLr),
-            "rippleud" => Some(Self::RippleUd),
-            "starry" | "stars" => Some(Self::Starry),
-            "ejection" => Some(Self::Ejection),
-            "kaleidoscope" => Some(Self::Kaleidoscope),
-            "cross" => Some(Self::Cross),
-            "keybreathing" | "reactive" => Some(Self::KeyBreathing),
-            "scroll" => Some(Self::Scroll),
-            "topbottom" => Some(Self::TopBottom),
+            "screen" | "neon" | "dazzle" | "neonstream" => Some(Self::Screen),
+            "topbottom" | "waterfall" | "colorfulwaterfall" => Some(Self::TopBottom),
+            "galloping" | "storm" | "rotatingstorm" => Some(Self::Galloping),
             "rain" | "raindrops" => Some(Self::Rain),
-            "windmill" => Some(Self::Windmill),
-            "galloping" => Some(Self::Galloping),
-            "music" => Some(Self::Music),
-            "custom" | "perkey" => Some(Self::Custom),
-            "off" | "none" => Some(Self::Off),
+            "ripple" | "ripplelr" | "ripples" | "ripplesshining" => Some(Self::RippleLr),
+            "rippleud" => Some(Self::RippleUd),
+            "cross" | "blossom" | "blossoming" => Some(Self::Cross),
+            "keybreathing" | "reactive" | "reaction" => Some(Self::KeyBreathing),
+            "starry" | "stars" | "starstwinkle" => Some(Self::Starry),
+            "ejection" | "flashaway" => Some(Self::Ejection),
+            "kaleidoscope" | "rainbowwheel" => Some(Self::Kaleidoscope),
+            "music" | "audioreactive" => Some(Self::Music),
+            "scroll" | "shadowdisappear" | "retinuescanning" => Some(Self::Scroll),
+            "off" | "none" | "lightsoff" => Some(Self::Off),
             _ => None,
         }
     }
@@ -87,24 +88,24 @@ impl EffectMode {
     pub fn name(self) -> &'static str {
         match self {
             Self::Static => "static",
-            Self::Breathing => "breathing",
-            Self::SineWave => "sine-wave",
             Self::Spectrum => "spectrum",
+            Self::Breathing => "breathing",
+            Self::Custom => "custom",
+            Self::Windmill => "windmill",
+            Self::SineWave => "sine-wave",
+            Self::Screen => "neon",
+            Self::TopBottom => "waterfall",
+            Self::Galloping => "storm",
+            Self::Rain => "rain",
             Self::RippleLr => "ripple-lr",
             Self::RippleUd => "ripple-ud",
+            Self::Cross => "blossom",
+            Self::KeyBreathing => "reactive",
             Self::Starry => "starry",
             Self::Ejection => "ejection",
             Self::Kaleidoscope => "kaleidoscope",
-            Self::Cross => "cross",
-            Self::KeyBreathing => "reactive",
-            Self::Scroll => "scroll",
-            Self::TopBottom => "top-bottom",
-            Self::Rain => "rain",
-            Self::Windmill => "windmill",
-            Self::Galloping => "galloping",
             Self::Music => "music",
-            Self::Screen => "screen",
-            Self::Custom => "custom",
+            Self::Scroll => "scroll",
             Self::Off => "off",
         }
     }
@@ -148,8 +149,8 @@ impl FrameRenderer {
             EffectMode::Static => {
                 let c = color.unwrap_or(Color::WHITE).scale(bri);
                 for key in KEYS {
-                    if key.led_idx < TOTAL_LEDS {
-                        frame[key.led_idx] = c;
+                    if key.hw_idx < TOTAL_LEDS {
+                        frame[key.hw_idx] = c;
                     }
                 }
             }
@@ -157,25 +158,25 @@ impl FrameRenderer {
                 let cycle = (t * 1.5).sin() * 0.5 + 0.5;
                 let c = color.unwrap_or(Color::from_hsv(t * 0.1, 1.0, 1.0)).scale(cycle * bri);
                 for key in KEYS {
-                    if key.led_idx < TOTAL_LEDS {
-                        frame[key.led_idx] = c;
+                    if key.hw_idx < TOTAL_LEDS {
+                        frame[key.hw_idx] = c;
                     }
                 }
             }
             EffectMode::Spectrum => {
                 for key in KEYS {
-                    if key.led_idx < TOTAL_LEDS {
+                    if key.hw_idx < TOTAL_LEDS {
                         let hue = t * 0.2 + (key.col as f32) * 0.05;
-                        frame[key.led_idx] = Color::from_hsv(hue, 1.0, bri);
+                        frame[key.hw_idx] = Color::from_hsv(hue, 1.0, bri);
                     }
                 }
             }
             EffectMode::SineWave => {
                 for key in KEYS {
-                    if key.led_idx < TOTAL_LEDS {
+                    if key.hw_idx < TOTAL_LEDS {
                         let offset = (key.rect.center_x() / 600.0) * std::f32::consts::PI * 2.0;
                         let wave = ((t * 3.0 + offset).sin() * 0.5 + 0.5) * bri;
-                        frame[key.led_idx] = color.unwrap_or_else(|| Color::from_hsv(t * 0.1 + offset * 0.2, 1.0, 1.0)).scale(wave);
+                        frame[key.hw_idx] = color.unwrap_or_else(|| Color::from_hsv(t * 0.1 + offset * 0.2, 1.0, 1.0)).scale(wave);
                     }
                 }
             }
@@ -183,11 +184,11 @@ impl FrameRenderer {
                 // Already all black
             }
             _ => {
-                // Fallback to rainbow wave
+                // Rainbow wave fallback
                 for key in KEYS {
-                    if key.led_idx < TOTAL_LEDS {
+                    if key.hw_idx < TOTAL_LEDS {
                         let u = key.rect.center_x() / 600.0;
-                        frame[key.led_idx] = Color::from_hsv(t * 0.2 + u, 1.0, bri);
+                        frame[key.hw_idx] = Color::from_hsv(t * 0.2 + u, 1.0, bri);
                     }
                 }
             }

@@ -5,8 +5,9 @@ use egui::{
     pos2, vec2, Color32, Pos2, Rect, Rounding, Sense, Stroke, Ui,
 };
 use std::collections::HashSet;
+use std::time::SystemTime;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PresetSelection {
     Wasd,
     Arrows,
@@ -17,26 +18,71 @@ pub enum PresetSelection {
     All,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GradientDirection {
+    Horizontal,
+    Vertical,
+    Radial,
+    Diagonal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PresetTheme {
+    Cyberpunk,
+    Synthwave,
+    ThermalFlame,
+    OceanicIce,
+    MatrixTerminal,
+    GamerWasd,
+}
+
 pub struct KeyboardCanvasState {
     /// Currently selected key names
     pub selected_keys: HashSet<&'static str>,
-    /// Per-key custom painted colors (key name -> RGB Color)
+    /// Per-key custom painted colors indexed by key.hw_idx (0..108)
     pub custom_colors: [Color; TOTAL_LEDS],
     /// Marquee drag selection box start position
     drag_start: Option<Pos2>,
+    /// Gradient Generator State
+    pub gradient_c1: Color,
+    pub gradient_c2: Color,
+    pub gradient_c3: Option<Color>,
+    pub gradient_dir: GradientDirection,
+    pub gradient_selected_only: bool,
+    /// Live Mirroring toggle: immediately push to physical hardware
+    pub live_mirror: bool,
+    /// Internal PRNG state
+    rng_state: u32,
 }
 
 impl Default for KeyboardCanvasState {
     fn default() -> Self {
+        let seed = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_micros() as u32)
+            .unwrap_or(0xCAFE_BABE);
+
         Self {
             selected_keys: HashSet::new(),
             custom_colors: [Color::new(0, 242, 254); TOTAL_LEDS],
             drag_start: None,
+            gradient_c1: Color::new(0, 242, 254),    // Cyan
+            gradient_c2: Color::new(255, 0, 127),   // Neon Pink
+            gradient_c3: None,
+            gradient_dir: GradientDirection::Horizontal,
+            gradient_selected_only: false,
+            live_mirror: true,
+            rng_state: seed,
         }
     }
 }
 
 impl KeyboardCanvasState {
+    pub fn next_rand(&mut self) -> f32 {
+        self.rng_state = self.rng_state.wrapping_mul(1664525).wrapping_add(1013904223);
+        (self.rng_state >> 8) as f32 / 16777216.0
+    }
+
     pub fn select_preset(&mut self, preset: PresetSelection) {
         self.selected_keys.clear();
         for key in KEYS {
@@ -81,22 +127,202 @@ impl KeyboardCanvasState {
     }
 
     pub fn paint_selected(&mut self, color: Color) {
+        let has_selection = !self.selected_keys.is_empty();
         for key in KEYS {
-            if self.selected_keys.contains(key.name) && key.led_idx < TOTAL_LEDS {
-                self.custom_colors[key.led_idx] = color;
+            if (!has_selection || self.selected_keys.contains(key.name)) && key.hw_idx < TOTAL_LEDS {
+                self.custom_colors[key.hw_idx] = color;
+            }
+        }
+    }
+
+    pub fn randomize_all(&mut self) {
+        for key in KEYS {
+            let h = self.next_rand();
+            let s = 0.88 + self.next_rand() * 0.12;
+            let v = 0.98;
+            self.custom_colors[key.hw_idx] = Color::from_hsv(h, s, v);
+        }
+    }
+
+    pub fn randomize_selected(&mut self) {
+        let has_selection = !self.selected_keys.is_empty();
+        for key in KEYS {
+            if !has_selection || self.selected_keys.contains(key.name) {
+                let h = self.next_rand();
+                let s = 0.88 + self.next_rand() * 0.12;
+                let v = 0.98;
+                self.custom_colors[key.hw_idx] = Color::from_hsv(h, s, v);
+            }
+        }
+    }
+
+    pub fn apply_spatial_gradient(
+        &mut self,
+        c1: Color,
+        c2: Color,
+        c3: Option<Color>,
+        dir: GradientDirection,
+        selected_only: bool,
+    ) {
+        let has_selection = selected_only && !self.selected_keys.is_empty();
+
+        let min_x = 29.0f32;
+        let max_x = 554.0f32;
+        let min_y = 41.0f32;
+        let max_y = 237.0f32;
+        let cx = (min_x + max_x) * 0.5;
+        let cy = (min_y + max_y) * 0.5;
+        let max_d = ((max_x - cx).powi(2) + (max_y - cy).powi(2)).sqrt();
+
+        for key in KEYS {
+            if has_selection && !self.selected_keys.contains(key.name) {
+                continue;
+            }
+
+            let kx = key.rect.center_x();
+            let ky = key.rect.center_y();
+
+            let t = match dir {
+                GradientDirection::Horizontal => ((kx - min_x) / (max_x - min_x)).clamp(0.0, 1.0),
+                GradientDirection::Vertical => ((ky - min_y) / (max_y - min_y)).clamp(0.0, 1.0),
+                GradientDirection::Radial => {
+                    let d = ((kx - cx).powi(2) + (ky - cy).powi(2)).sqrt();
+                    (d / max_d).clamp(0.0, 1.0)
+                }
+                GradientDirection::Diagonal => {
+                    let tx = (kx - min_x) / (max_x - min_x);
+                    let ty = (ky - min_y) / (max_y - min_y);
+                    ((tx + ty) * 0.5).clamp(0.0, 1.0)
+                }
+            };
+
+            let final_color = match c3 {
+                Some(stop3) => {
+                    if t < 0.5 {
+                        c1.lerp(c2, t * 2.0)
+                    } else {
+                        c2.lerp(stop3, (t - 0.5) * 2.0)
+                    }
+                }
+                None => c1.lerp(c2, t),
+            };
+
+            self.custom_colors[key.hw_idx] = final_color;
+        }
+    }
+
+    pub fn randomize_gradient(&mut self, selected_only: bool) {
+        let h1 = self.next_rand();
+        let h2 = (h1 + 0.3 + self.next_rand() * 0.4) % 1.0;
+        let c1 = Color::from_hsv(h1, 0.95, 1.0);
+        let c2 = Color::from_hsv(h2, 0.95, 1.0);
+        let use_three = self.next_rand() > 0.4;
+        let c3 = if use_three {
+            let h3 = (h2 + 0.3 + self.next_rand() * 0.4) % 1.0;
+            Some(Color::from_hsv(h3, 0.95, 1.0))
+        } else {
+            None
+        };
+
+        let dir = match (self.next_rand() * 4.0) as u32 % 4 {
+            0 => GradientDirection::Horizontal,
+            1 => GradientDirection::Vertical,
+            2 => GradientDirection::Radial,
+            _ => GradientDirection::Diagonal,
+        };
+
+        self.gradient_c1 = c1;
+        self.gradient_c2 = c2;
+        self.gradient_c3 = c3;
+        self.gradient_dir = dir;
+
+        self.apply_spatial_gradient(c1, c2, c3, dir, selected_only);
+    }
+
+    pub fn apply_preset_theme(&mut self, theme: PresetTheme) {
+        match theme {
+            PresetTheme::Cyberpunk => {
+                let pink = Color::new(255, 0, 127);
+                let cyan = Color::new(0, 242, 254);
+                self.gradient_c1 = pink;
+                self.gradient_c2 = cyan;
+                self.gradient_c3 = None;
+                self.gradient_dir = GradientDirection::Horizontal;
+                self.apply_spatial_gradient(pink, cyan, None, GradientDirection::Horizontal, false);
+            }
+            PresetTheme::Synthwave => {
+                let violet = Color::new(139, 0, 255);
+                let magenta = Color::new(255, 20, 147);
+                let orange = Color::new(255, 140, 0);
+                self.gradient_c1 = violet;
+                self.gradient_c2 = magenta;
+                self.gradient_c3 = Some(orange);
+                self.gradient_dir = GradientDirection::Diagonal;
+                self.apply_spatial_gradient(violet, magenta, Some(orange), GradientDirection::Diagonal, false);
+            }
+            PresetTheme::ThermalFlame => {
+                let dark_red = Color::new(180, 0, 0);
+                let orange = Color::new(255, 69, 0);
+                let gold = Color::new(255, 215, 0);
+                self.gradient_c1 = dark_red;
+                self.gradient_c2 = orange;
+                self.gradient_c3 = Some(gold);
+                self.gradient_dir = GradientDirection::Vertical;
+                self.apply_spatial_gradient(dark_red, orange, Some(gold), GradientDirection::Vertical, false);
+            }
+            PresetTheme::OceanicIce => {
+                let navy = Color::new(0, 31, 63);
+                let aqua = Color::new(0, 201, 255);
+                let mint = Color::new(146, 254, 157);
+                self.gradient_c1 = navy;
+                self.gradient_c2 = aqua;
+                self.gradient_c3 = Some(mint);
+                self.gradient_dir = GradientDirection::Horizontal;
+                self.apply_spatial_gradient(navy, aqua, Some(mint), GradientDirection::Horizontal, false);
+            }
+            PresetTheme::MatrixTerminal => {
+                let dark_green = Color::new(0, 45, 0);
+                let bright_lime = Color::new(0, 255, 65);
+                self.gradient_c1 = dark_green;
+                self.gradient_c2 = bright_lime;
+                self.gradient_c3 = None;
+                self.gradient_dir = GradientDirection::Vertical;
+                self.apply_spatial_gradient(dark_green, bright_lime, None, GradientDirection::Vertical, false);
+            }
+            PresetTheme::GamerWasd => {
+                let wasd_red = Color::new(255, 0, 50);
+                let arrow_gold = Color::new(255, 215, 0);
+                let alpha_cyan = Color::new(0, 212, 255);
+                let mod_purple = Color::new(138, 43, 226);
+
+                for key in KEYS {
+                    let col = if matches!(key.name, "w" | "a" | "s" | "d") {
+                        wasd_red
+                    } else if matches!(key.name, "up" | "down" | "left" | "right") {
+                        arrow_gold
+                    } else if matches!(key.name, "lctrl" | "rctrl" | "lalt" | "ralt" | "lwin" | "fn" | "lshift" | "rshift" | "esc" | "enter" | "backspace" | "tab" | "capslock") {
+                        mod_purple
+                    } else {
+                        alpha_cyan
+                    };
+                    self.custom_colors[key.hw_idx] = col;
+                }
             }
         }
     }
 }
 
 /// Renders the interactive 75% 82-key AK820 Max visual keyboard canvas.
+/// Returns `true` if any keys were clicked, painted, or selection modified.
 pub fn render_keyboard_canvas(
     ui: &mut Ui,
     state: &mut KeyboardCanvasState,
     preview_frame: &[Color; TOTAL_LEDS],
-    audio_levels: Option<&[f32]>,
+    _audio_levels: Option<&[f32]>,
     is_custom_mode: bool,
-) {
+) -> bool {
+    let mut changed = false;
+
     ui.vertical(|ui| {
         // Preset toolbar
         ui.horizontal_wrapped(|ui| {
@@ -274,15 +500,14 @@ pub fn render_keyboard_canvas(
                 } else {
                     state.selected_keys.insert(key.name);
                 }
+                changed = true;
             }
 
-            // Determine key illumination color
+            // Determine key illumination color using exact hw_idx matrix
             let led_color = if is_custom_mode {
-                state.custom_colors[key.led_idx]
-            } else if audio_levels.is_some() {
-                preview_frame[key.hw_idx]
+                state.custom_colors[key.hw_idx]
             } else {
-                preview_frame[key.led_idx]
+                preview_frame[key.hw_idx]
             };
 
             let egui_led = Color32::from_rgb(led_color.r, led_color.g, led_color.b);
@@ -350,4 +575,6 @@ pub fn render_keyboard_canvas(
             );
         }
     });
+
+    changed
 }

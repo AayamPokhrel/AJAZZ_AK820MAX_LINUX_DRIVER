@@ -36,6 +36,16 @@ pub enum AudioSource {
     Custom(String),
 }
 
+impl AudioSource {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::SystemLoopback => "System Desktop Audio (Loopback)",
+            Self::Microphone => "Microphone",
+            Self::Custom(s) => s.as_str(),
+        }
+    }
+}
+
 impl Default for AudioSource {
     fn default() -> Self {
         Self::SystemLoopback

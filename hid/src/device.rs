@@ -309,33 +309,20 @@ impl AjazzDevice {
                 }
             }
             ProtocolVariant::ByComboWired => {
-                // Switch to custom mode
-                let get_req = bycombo_wired_get_led_request();
-                let mut current_buf = vec![0u8; 520];
-                if t.send_feature(&get_req).is_ok() {
-                    std::thread::sleep(Duration::from_millis(20));
-                    let _ = t.get_feature(0x06, &mut current_buf);
-                }
-                let payload_slice = if current_buf.len() >= 136 && current_buf[1] == 0x84 {
-                    Some(&current_buf[8..8 + 128])
-                } else {
-                    None
-                };
                 let settings = EffectSettings {
-                    mode: ajazz_rgb::effects::EffectMode::Custom,
-                    brightness,
+                    mode: ajazz_rgb::effects::EffectMode::Music,
+                    brightness: brightness.clamp(1, 5),
                     speed: 4,
                     direction: ajazz_rgb::effects::Direction::Right,
                     palette_color: ajazz_rgb::color::PaletteColor::Rainbow,
                     custom_color: None,
                 };
-                let mode_pkt = bycombo_wired_set_led_packet(payload_slice, &settings);
-                t.send_feature(&mode_pkt)?;
-                std::thread::sleep(Duration::from_millis(20));
+                let mode_pkt = bycombo_wired_set_led_packet(None, &settings);
+                let _ = t.send_feature(&mode_pkt);
+                std::thread::sleep(Duration::from_millis(15));
 
-                let matrix_pkt = bycombo_wired_matrix_packet(matrix);
+                let matrix_pkt = bycombo_wired_live_music_packet(matrix);
                 t.send_feature(&matrix_pkt)?;
-                std::thread::sleep(Duration::from_millis(20));
             }
         }
         info!("Per-key custom RGB matrix uploaded to keyboard");

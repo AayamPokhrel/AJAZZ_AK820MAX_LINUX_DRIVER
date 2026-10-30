@@ -133,6 +133,7 @@ dependencies = [
  "ajazz-audio",
  "ajazz-hid",
  "ajazz-rgb",
+ "serde_json",
  "tokio",
 ]
 

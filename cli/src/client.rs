@@ -61,6 +61,11 @@ pub enum DaemonRequest {
         colors: Vec<String>,
         brightness: Option<u8>,
     },
+    UpdateCustomLive {
+        colors: Vec<String>,
+        brightness: Option<u8>,
+    },
+    GetConfig,
     SetSleep {
         minutes: u8,
     },
@@ -74,6 +79,7 @@ pub enum DaemonResponse {
     Pong,
     Status(DeviceStatus),
     Devices(Vec<DiscoveredDevice>),
+    Config(ajazz_rgb::storage::PersistentConfig),
     Error { message: String },
 }
 

@@ -4,22 +4,38 @@ use ajazz_rgb::color::{Color, PaletteColor};
 use ajazz_rgb::effects::{Direction, EffectMode, EffectSettings};
 use egui::{vec2, Color32, Rounding, Stroke, Ui};
 use std::str::FromStr;
+use std::time::SystemTime;
 
 pub struct EffectsStudioState {
     pub current_settings: EffectSettings,
     pub is_custom_color: bool,
     pub hex_input: String,
     pub status_message: Option<(String, bool)>, // (message, is_success)
+    rng_seed: u32,
 }
 
 impl Default for EffectsStudioState {
     fn default() -> Self {
+        let seed = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_micros() as u32)
+            .unwrap_or(0xFEED_FACE);
+
         Self {
             current_settings: EffectSettings::default(),
             is_custom_color: false,
             hex_input: "#00F2FE".to_string(),
             status_message: None,
+            rng_seed: seed,
         }
+    }
+}
+
+impl EffectsStudioState {
+    pub fn random_color(&mut self) -> Color {
+        self.rng_seed = self.rng_seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        let h = (self.rng_seed >> 8) as f32 / 16777216.0;
+        Color::from_hsv(h, 0.95, 1.0)
     }
 }
 
@@ -51,7 +67,7 @@ pub fn render_effects_studio(
         // Effects Selector Header
         ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new("Built-in Lighting Effects")
+                egui::RichText::new("Built-in Lighting Effects Studio")
                     .heading()
                     .color(ThemeColors::TEXT_PRIMARY),
             );
@@ -67,29 +83,36 @@ pub fn render_effects_studio(
             });
         });
 
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("Click any effect or adjust controls to immediately see changes on the physical keyboard.")
+                .small()
+                .color(ThemeColors::TEXT_MUTED),
+        );
+
         ui.add_space(8.0);
 
-        // Effect Buttons Grid
+        // Effect Buttons Grid (All 20 verified hardware effect modes)
         let effects = [
             ("Static", EffectMode::Static),
+            ("Rainbow / Spectrum", EffectMode::Spectrum),
             ("Breathing", EffectMode::Breathing),
+            ("Windmill", EffectMode::Windmill),
             ("Sine Wave", EffectMode::SineWave),
-            ("Spectrum", EffectMode::Spectrum),
+            ("Neon Stream", EffectMode::Screen),
+            ("Waterfall", EffectMode::TopBottom),
+            ("Storm", EffectMode::Galloping),
+            ("Raindrops", EffectMode::Rain),
             ("Ripple L-R", EffectMode::RippleLr),
             ("Ripple U-D", EffectMode::RippleUd),
-            ("Starry", EffectMode::Starry),
-            ("Ejection", EffectMode::Ejection),
-            ("Kaleidoscope", EffectMode::Kaleidoscope),
-            ("Cross", EffectMode::Cross),
+            ("Cross / Blossom", EffectMode::Cross),
             ("Reactive", EffectMode::KeyBreathing),
-            ("Scroll", EffectMode::Scroll),
-            ("Top-Bottom", EffectMode::TopBottom),
-            ("Rain", EffectMode::Rain),
-            ("Windmill", EffectMode::Windmill),
-            ("Galloping", EffectMode::Galloping),
-            ("Music", EffectMode::Music),
-            ("Screen", EffectMode::Screen),
-            ("Custom", EffectMode::Custom),
+            ("Stars Twinkle", EffectMode::Starry),
+            ("Flash Away", EffectMode::Ejection),
+            ("Rainbow Wheel", EffectMode::Kaleidoscope),
+            ("Music Reactive", EffectMode::Music),
+            ("Shadow Disappear", EffectMode::Scroll),
+            ("Custom Stream", EffectMode::Custom),
             ("Lights Off", EffectMode::Off),
         ];
 
@@ -99,7 +122,7 @@ pub fn render_effects_studio(
                 for (idx, (label, mode)) in effects.iter().enumerate() {
                     let is_active = state.current_settings.mode == *mode;
                     let btn = egui::Button::new(*label)
-                        .min_size(vec2(110.0, 34.0))
+                        .min_size(vec2(130.0, 36.0))
                         .rounding(Rounding::same(8.0))
                         .fill(if is_active {
                             ThemeColors::ACCENT_PURPLE
@@ -107,13 +130,18 @@ pub fn render_effects_studio(
                             ThemeColors::BG_CARD
                         })
                         .stroke(if is_active {
-                            Stroke::new(1.5_f32, ThemeColors::ACCENT_CYAN)
+                            Stroke::new(1.8_f32, ThemeColors::ACCENT_CYAN)
                         } else {
                             Stroke::new(1.0_f32, ThemeColors::BORDER_MUTED)
                         });
 
                     if ui.add(btn).clicked() {
                         state.current_settings.mode = *mode;
+                        let _ = coordinator.set_effect(&state.current_settings);
+                        state.status_message = Some((
+                            format!("Activated {} effect", label),
+                            true,
+                        ));
                     }
 
                     if (idx + 1) % 5 == 0 {
@@ -131,7 +159,7 @@ pub fn render_effects_studio(
             // Left Column: Parameters
             columns[0].vertical(|ui| {
                 ui.label(
-                    egui::RichText::new("Effect Tuning")
+                    egui::RichText::new("Effect Tuning & Dynamics")
                         .strong()
                         .color(ThemeColors::TEXT_SECONDARY),
                 );
@@ -140,21 +168,27 @@ pub fn render_effects_studio(
                 // Brightness Slider (1..=5)
                 ui.horizontal(|ui| {
                     ui.label("Brightness:");
-                    ui.add(
+                    let resp = ui.add(
                         egui::Slider::new(&mut state.current_settings.brightness, 1..=5)
                             .show_value(true)
                             .text("levels"),
                     );
+                    if resp.changed() {
+                        let _ = coordinator.set_effect(&state.current_settings);
+                    }
                 });
 
                 // Speed Slider (1..=5)
                 ui.horizontal(|ui| {
                     ui.label("Speed:       ");
-                    ui.add(
+                    let resp = ui.add(
                         egui::Slider::new(&mut state.current_settings.speed, 1..=5)
                             .show_value(true)
                             .text("levels"),
                     );
+                    if resp.changed() {
+                        let _ = coordinator.set_effect(&state.current_settings);
+                    }
                 });
 
                 // Direction Toggle
@@ -166,20 +200,22 @@ pub fn render_effects_studio(
                         .clicked()
                     {
                         state.current_settings.direction = Direction::Right;
+                        let _ = coordinator.set_effect(&state.current_settings);
                     }
                     if ui
                         .selectable_label(!is_right, "← Left")
                         .clicked()
                     {
                         state.current_settings.direction = Direction::Left;
+                        let _ = coordinator.set_effect(&state.current_settings);
                     }
                 });
 
-                ui.add_space(8.0);
+                ui.add_space(12.0);
 
                 // Apply button
                 let apply_btn = egui::Button::new(
-                    egui::RichText::new("⚡ Apply Effect to Keyboard")
+                    egui::RichText::new("⚡ Re-apply Effect to Hardware")
                         .strong()
                         .color(Color32::WHITE),
                 )
@@ -204,11 +240,32 @@ pub fn render_effects_studio(
 
             // Right Column: Color Selection & Palette
             columns[1].vertical(|ui| {
-                ui.label(
-                    egui::RichText::new("Color Selection")
-                        .strong()
-                        .color(ThemeColors::TEXT_SECONDARY),
-                );
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Color Selection & Generators")
+                            .strong()
+                            .color(ThemeColors::TEXT_SECONDARY),
+                    );
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new("🎲 Random Color")
+                                    .fill(ThemeColors::BG_CARD)
+                                    .rounding(Rounding::same(6.0)),
+                            )
+                            .clicked()
+                        {
+                            let c = state.random_color();
+                            state.is_custom_color = true;
+                            state.current_settings.custom_color = Some(c);
+                            state.hex_input = c.to_hex();
+                            let _ = coordinator.set_effect(&state.current_settings);
+                            state.status_message = Some((format!("Random color {} applied", c.to_hex()), true));
+                        }
+                    });
+                });
+
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
@@ -219,6 +276,7 @@ pub fn render_effects_studio(
                         state.is_custom_color = false;
                         state.current_settings.palette_color = PaletteColor::Rainbow;
                         state.current_settings.custom_color = None;
+                        let _ = coordinator.set_effect(&state.current_settings);
                     }
 
                     if ui
@@ -229,6 +287,7 @@ pub fn render_effects_studio(
                         if state.current_settings.custom_color.is_none() {
                             state.current_settings.custom_color = Some(Color::new(0, 242, 254));
                         }
+                        let _ = coordinator.set_effect(&state.current_settings);
                     }
                 });
 
@@ -263,6 +322,7 @@ pub fn render_effects_studio(
                             state.is_custom_color = true;
                             state.current_settings.custom_color = Some(*col);
                             state.hex_input = col.to_hex();
+                            let _ = coordinator.set_effect(&state.current_settings);
                         }
                     }
                 });
@@ -282,6 +342,7 @@ pub fn render_effects_studio(
                         if let Ok(parsed) = Color::from_str(&state.hex_input) {
                             state.is_custom_color = true;
                             state.current_settings.custom_color = Some(parsed);
+                            let _ = coordinator.set_effect(&state.current_settings);
                         }
                     }
 
