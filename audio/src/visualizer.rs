@@ -181,23 +181,27 @@ impl ColorMode {
             "oceanic" | "ice" | "oceanicice" | "water" => {
                 Some(Self::Palette(ColorPalette::OceanicIce))
             }
-            "randomperkeybeat" | "perkeybeat" | "randombeat" => Some(Self::RandomPerKeyBeat),
-            "randomperkeycycle" | "perkeycycle" | "randomcycle" | "flowing" => {
+            "randomperkeybeat" | "perkeybeat" | "randombeat" | "beat" | "random-beat" => {
+                Some(Self::RandomPerKeyBeat)
+            }
+            "randomperkeycycle" | "perkeycycle" | "randomcycle" | "flowing" | "cycle" | "random-cycle" => {
                 Some(Self::RandomPerKeyCycle)
             }
-            "randomperkeystatic" | "perkeystatic" | "mosaic" => Some(Self::RandomPerKeyStatic),
-            "randomzonegradient" | "zonegradient" | "randomzone" | "horizontalzone" => {
+            "randomperkeystatic" | "perkeystatic" | "mosaic" | "static" | "random-static" => {
+                Some(Self::RandomPerKeyStatic)
+            }
+            "randomzonegradient" | "zonegradient" | "randomzone" | "horizontalzone" | "horizontal" => {
                 Some(Self::RandomZoneGradient {
                     direction: ZoneDirection::Horizontal,
                 })
             }
-            "verticalzone" => Some(Self::RandomZoneGradient {
+            "verticalzone" | "vertical" => Some(Self::RandomZoneGradient {
                 direction: ZoneDirection::Vertical,
             }),
-            "radialzone" => Some(Self::RandomZoneGradient {
+            "radialzone" | "radial" => Some(Self::RandomZoneGradient {
                 direction: ZoneDirection::Radial,
             }),
-            "diagonalzone" => Some(Self::RandomZoneGradient {
+            "diagonalzone" | "diagonal" => Some(Self::RandomZoneGradient {
                 direction: ZoneDirection::Diagonal,
             }),
             _ => None,
