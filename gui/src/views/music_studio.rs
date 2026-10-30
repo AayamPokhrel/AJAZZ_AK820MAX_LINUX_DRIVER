@@ -1,15 +1,20 @@
 use crate::audio_worker::AudioVisualizerWorker;
 use crate::ipc::HardwareCoordinator;
 use crate::theme::ThemeColors;
-use ajazz_audio::visualizer::VisualizerStyle;
+use ajazz_audio::capture::AudioSource;
+use ajazz_audio::visualizer::{ColorPalette, VisualizerStyle};
 use ajazz_rgb::color::Color;
 use egui::{pos2, vec2, Color32, Rect, Rounding, Stroke, Ui};
 
 pub struct MusicStudioState {
     pub style: VisualizerStyle,
+    pub palette: ColorPalette,
     pub sensitivity: f32,
+    pub noise_gate: f32,
     pub fps: u32,
+    pub audio_source: AudioSource,
     pub custom_tint: Option<Color>,
+    pub custom_peak: Option<Color>,
     pub status_message: Option<(String, bool)>,
 }
 
@@ -17,9 +22,13 @@ impl Default for MusicStudioState {
     fn default() -> Self {
         Self {
             style: VisualizerStyle::Spectrum,
+            palette: ColorPalette::StockClassic,
             sensitivity: 1.2,
+            noise_gate: 0.05,
             fps: 60,
+            audio_source: AudioSource::SystemLoopback,
             custom_tint: None,
+            custom_peak: None,
             status_message: None,
         }
     }
@@ -60,9 +69,9 @@ pub fn render_music_studio(
         // Visualizer Style Switcher
         let styles = [
             ("Equalizer Spectrum", VisualizerStyle::Spectrum, "10-band rising equalizer bars"),
-            ("Bass Pulse", VisualizerStyle::Pulse, "Dynamic energy pulsation"),
+            ("Bass Pulse", VisualizerStyle::Pulse, "Dynamic energy pulsation from center"),
             ("Ripple Wave", VisualizerStyle::Wave, "Expanding acoustic radial ripples"),
-            ("Soft Dance", VisualizerStyle::SoftDance, "Gentle harmonized melodic waves"),
+            ("Matrix Rain", VisualizerStyle::Matrix, "Cascading acoustic matrix rain drops"),
             ("Passion Rock", VisualizerStyle::Passion, "High-intensity transient bursts"),
         ];
 
@@ -86,11 +95,26 @@ pub fn render_music_studio(
                 if ui.add(btn).clicked() {
                     state.style = *style;
                     if is_active {
-                        // Re-trigger live style change
+                        audio_worker.update_config(
+                            state.style,
+                            state.palette.clone(),
+                            state.custom_tint,
+                            state.sensitivity,
+                            state.noise_gate,
+                            state.fps,
+                        );
+                        let source_str = match &state.audio_source {
+                            AudioSource::Microphone => "mic",
+                            AudioSource::SystemLoopback => "system",
+                            AudioSource::Custom(s) => s.as_str(),
+                        };
                         let _ = coordinator.start_music(
                             state.style.name(),
                             state.custom_tint,
+                            Some(state.palette.name()),
                             state.sensitivity,
+                            Some(state.noise_gate),
+                            Some(source_str),
                             state.fps,
                         );
                     }
@@ -100,7 +124,7 @@ pub fn render_music_studio(
 
         ui.add_space(14.0);
 
-        // Real-time 10-Band Frequency Spectrum Analyzer Canvas
+        // Real-time 10-Band Frequency Spectrum Analyzer Canvas with Peak Hold
         ui.group(|ui| {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
@@ -111,7 +135,12 @@ pub fn render_music_studio(
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let status_badge = if is_active {
-                            egui::RichText::new("● LIVE AUDIO CAPTURE")
+                            let src_label = match &state.audio_source {
+                                AudioSource::SystemLoopback => "DESKTOP AUDIO LOOPBACK",
+                                AudioSource::Microphone => "MICROPHONE",
+                                AudioSource::Custom(s) => s.as_str(),
+                            };
+                            egui::RichText::new(format!("● LIVE [{}]", src_label))
                                 .color(ThemeColors::STATUS_SUCCESS)
                                 .small()
                         } else {
@@ -161,7 +190,7 @@ pub fn render_music_studio(
                     // Bar fill
                     painter.rect_filled(bar_rect, rounding, bar_color);
 
-                    // Peak decay line
+                    // Peak decay indicator tick
                     let peak_y = by_bottom - (peak * max_bar_h).max(3.0);
                     let peak_rect = Rect::from_min_max(pos2(bx, peak_y - 2.0), pos2(bx + bar_width, peak_y));
                     painter.rect_filled(peak_rect, Rounding::same(1.0), Color32::WHITE);
@@ -183,10 +212,10 @@ pub fn render_music_studio(
 
         // Music Controls & Sliders
         ui.columns(2, |columns| {
-            // Left Column: Main Action & Tuning
+            // Left Column: Main Action, Audio Source & DSP Tuning
             columns[0].vertical(|ui| {
                 ui.label(
-                    egui::RichText::new("Visualizer Engine")
+                    egui::RichText::new("Visualizer Engine Controls")
                         .strong()
                         .color(ThemeColors::TEXT_SECONDARY),
                 );
@@ -219,25 +248,87 @@ pub fn render_music_studio(
                         let _ = coordinator.stop_music();
                         state.status_message = Some(("Music visualizer stopped.".to_string(), true));
                     } else {
-                        audio_worker.start(state.sensitivity);
+                        audio_worker.start(
+                            state.style,
+                            state.palette.clone(),
+                            state.custom_tint,
+                            state.sensitivity,
+                            state.noise_gate,
+                            state.fps,
+                            Some(state.audio_source.clone()),
+                            coordinator.direct_device(),
+                        );
+                        let source_str = match &state.audio_source {
+                            AudioSource::Microphone => "mic",
+                            AudioSource::SystemLoopback => "system",
+                            AudioSource::Custom(s) => s.as_str(),
+                        };
                         match coordinator.start_music(
                             state.style.name(),
                             state.custom_tint,
+                            Some(state.palette.name()),
                             state.sensitivity,
+                            Some(state.noise_gate),
+                            Some(source_str),
                             state.fps,
                         ) {
                             Ok(_) => {
                                 state.status_message = Some((
-                                    format!("Music sync active ({} mode)", state.style.name()),
+                                    format!("Hardware music sync active ({} mode)", state.style.name()),
                                     true,
                                 ));
                             }
                             Err(e) => {
-                                state.status_message = Some((format!("Direct audio active: {}", e), true));
+                                state.status_message = Some((format!("Direct audio streaming active: {}", e), true));
                             }
                         }
                     }
                 }
+
+                ui.add_space(10.0);
+
+                // Audio Source Selector
+                ui.label(
+                    egui::RichText::new("Audio Input Source")
+                        .small()
+                        .color(ThemeColors::TEXT_MUTED),
+                );
+                ui.horizontal(|ui| {
+                    let is_system = state.audio_source == AudioSource::SystemLoopback;
+                    if ui.selectable_label(is_system, "🔊 System Desktop Audio (Loopback)").clicked() {
+                        state.audio_source = AudioSource::SystemLoopback;
+                        if is_active {
+                            audio_worker.stop();
+                            audio_worker.start(
+                                state.style,
+                                state.palette.clone(),
+                                state.custom_tint,
+                                state.sensitivity,
+                                state.noise_gate,
+                                state.fps,
+                                Some(state.audio_source.clone()),
+                                coordinator.direct_device(),
+                            );
+                        }
+                    }
+                    let is_mic = state.audio_source == AudioSource::Microphone;
+                    if ui.selectable_label(is_mic, "🎙 Microphone Input").clicked() {
+                        state.audio_source = AudioSource::Microphone;
+                        if is_active {
+                            audio_worker.stop();
+                            audio_worker.start(
+                                state.style,
+                                state.palette.clone(),
+                                state.custom_tint,
+                                state.sensitivity,
+                                state.noise_gate,
+                                state.fps,
+                                Some(state.audio_source.clone()),
+                                coordinator.direct_device(),
+                            );
+                        }
+                    }
+                });
 
                 ui.add_space(8.0);
 
@@ -251,10 +342,33 @@ pub fn render_music_studio(
                             .text("gain"),
                     );
                     if changed.changed() && is_active {
-                        let _ = coordinator.start_music(
-                            state.style.name(),
+                        audio_worker.update_config(
+                            state.style,
+                            state.palette.clone(),
                             state.custom_tint,
                             state.sensitivity,
+                            state.noise_gate,
+                            state.fps,
+                        );
+                    }
+                });
+
+                // Noise Gate Slider
+                ui.horizontal(|ui| {
+                    ui.label("Noise Gate: ");
+                    let changed = ui.add(
+                        egui::Slider::new(&mut state.noise_gate, 0.0..=0.30)
+                            .show_value(true)
+                            .step_by(0.01)
+                            .text("threshold"),
+                    );
+                    if changed.changed() && is_active {
+                        audio_worker.update_config(
+                            state.style,
+                            state.palette.clone(),
+                            state.custom_tint,
+                            state.sensitivity,
+                            state.noise_gate,
                             state.fps,
                         );
                     }
@@ -267,10 +381,12 @@ pub fn render_music_studio(
                         if ui.selectable_label(state.fps == target, format!("{} Hz", target)).clicked() {
                             state.fps = target;
                             if is_active {
-                                let _ = coordinator.start_music(
-                                    state.style.name(),
+                                audio_worker.update_config(
+                                    state.style,
+                                    state.palette.clone(),
                                     state.custom_tint,
                                     state.sensitivity,
+                                    state.noise_gate,
                                     state.fps,
                                 );
                             }
@@ -279,69 +395,112 @@ pub fn render_music_studio(
                 });
             });
 
-            // Right Column: Color Tint Mode
+            // Right Column: Color Themes & Custom Palette Selection
             columns[1].vertical(|ui| {
                 ui.label(
-                    egui::RichText::new("Visualizer Color Palette")
+                    egui::RichText::new("Visualizer Color Theme & Palette")
                         .strong()
                         .color(ThemeColors::TEXT_SECONDARY),
                 );
                 ui.add_space(6.0);
 
-                let is_dynamic = state.custom_tint.is_none();
-                if ui.selectable_label(is_dynamic, "🌈 Dynamic Frequency Spectrum").clicked() {
-                    state.custom_tint = None;
-                    if is_active {
-                        let _ = coordinator.start_music(
-                            state.style.name(),
-                            None,
-                            state.sensitivity,
-                            state.fps,
-                        );
-                    }
-                }
+                let palettes = [
+                    ("Classic Stock", ColorPalette::StockClassic),
+                    ("Cyberpunk Neon", ColorPalette::CyberpunkNeon),
+                    ("Thermal / Fire", ColorPalette::ThermalFire),
+                    ("Oceanic / Ice", ColorPalette::OceanicIce),
+                ];
 
-                if ui.selectable_label(!is_dynamic, "🎨 Monochrome / Single Tint").clicked() {
-                    state.custom_tint = Some(Color::new(0, 242, 254));
-                    if is_active {
-                        let _ = coordinator.start_music(
-                            state.style.name(),
-                            state.custom_tint,
-                            state.sensitivity,
-                            state.fps,
-                        );
-                    }
-                }
-
-                if let Some(curr_tint) = state.custom_tint {
-                    ui.add_space(4.0);
-                    let mut selected_new_color = None;
-                    ui.horizontal(|ui| {
-                        for (_, col) in crate::views::effects_studio::QUICK_SWATCHES.iter().take(8) {
-                            let c32 = Color32::from_rgb(col.r, col.g, col.b);
-                            let is_curr = curr_tint == *col;
-                            let (rect, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), egui::Sense::click());
-                            ui.painter().rect_filled(rect, Rounding::same(6.0), c32);
-                            if is_curr {
-                                ui.painter().rect_stroke(rect, Rounding::same(6.0), Stroke::new(2.0_f32, Color32::WHITE));
-                            }
-                            if resp.clicked() {
-                                selected_new_color = Some(*col);
-                            }
-                        }
-                    });
-
-                    if let Some(new_col) = selected_new_color {
-                        state.custom_tint = Some(new_col);
+                for (p_name, p_val) in palettes {
+                    let is_sel = state.palette == p_val;
+                    if ui.selectable_label(is_sel, p_name).clicked() {
+                        state.palette = p_val;
                         if is_active {
+                            audio_worker.update_config(
+                                state.style,
+                                state.palette.clone(),
+                                state.custom_tint,
+                                state.sensitivity,
+                                state.noise_gate,
+                                state.fps,
+                            );
+                            let source_str = match &state.audio_source {
+                                AudioSource::Microphone => "mic",
+                                AudioSource::SystemLoopback => "system",
+                                AudioSource::Custom(s) => s.as_str(),
+                            };
                             let _ = coordinator.start_music(
                                 state.style.name(),
                                 state.custom_tint,
+                                Some(state.palette.name()),
                                 state.sensitivity,
+                                Some(state.noise_gate),
+                                Some(source_str),
                                 state.fps,
                             );
                         }
                     }
+                }
+
+                // Custom Dual-Color Gradient Option
+                let is_custom_grad = matches!(state.palette, ColorPalette::CustomGradient { .. });
+                if ui.selectable_label(is_custom_grad, "🎨 Custom Dual-Color Gradient").clicked() {
+                    let base = state.custom_tint.unwrap_or(Color::new(0, 50, 180));
+                    let peak = state.custom_peak.unwrap_or(Color::new(0, 242, 254));
+                    state.palette = ColorPalette::CustomGradient { base, peak };
+                    if is_active {
+                        audio_worker.update_config(
+                            state.style,
+                            state.palette.clone(),
+                            state.custom_tint,
+                            state.sensitivity,
+                            state.noise_gate,
+                            state.fps,
+                        );
+                    }
+                }
+
+                if let ColorPalette::CustomGradient { mut base, mut peak } = state.palette {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Base Color: ");
+                        for (_, col) in crate::views::effects_studio::QUICK_SWATCHES.iter().take(6) {
+                            let c32 = Color32::from_rgb(col.r, col.g, col.b);
+                            let (rect, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), egui::Sense::click());
+                            ui.painter().rect_filled(rect, Rounding::same(4.0), c32);
+                            if base == *col {
+                                ui.painter().rect_stroke(rect, Rounding::same(4.0), Stroke::new(2.0_f32, Color32::WHITE));
+                            }
+                            if resp.clicked() {
+                                base = *col;
+                                state.custom_tint = Some(base);
+                                state.palette = ColorPalette::CustomGradient { base, peak };
+                                if is_active {
+                                    audio_worker.update_config(state.style, state.palette.clone(), state.custom_tint, state.sensitivity, state.noise_gate, state.fps);
+                                }
+                            }
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Peak Color: ");
+                        for (_, col) in crate::views::effects_studio::QUICK_SWATCHES.iter().skip(4).take(6) {
+                            let c32 = Color32::from_rgb(col.r, col.g, col.b);
+                            let (rect, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), egui::Sense::click());
+                            ui.painter().rect_filled(rect, Rounding::same(4.0), c32);
+                            if peak == *col {
+                                ui.painter().rect_stroke(rect, Rounding::same(4.0), Stroke::new(2.0_f32, Color32::WHITE));
+                            }
+                            if resp.clicked() {
+                                peak = *col;
+                                state.custom_peak = Some(peak);
+                                state.palette = ColorPalette::CustomGradient { base, peak };
+                                if is_active {
+                                    audio_worker.update_config(state.style, state.palette.clone(), state.custom_tint, state.sensitivity, state.noise_gate, state.fps);
+                                }
+                            }
+                        }
+                    });
                 }
             });
         });

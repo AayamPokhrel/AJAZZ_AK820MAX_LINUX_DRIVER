@@ -40,7 +40,10 @@ pub enum DaemonRequest {
     StartMusic {
         style: String,
         color: Option<String>,
+        palette: Option<String>,
         sensitivity: Option<f32>,
+        noise_gate: Option<f32>,
+        source: Option<String>,
         fps: Option<u32>,
     },
     StopMusic,

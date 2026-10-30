@@ -4,6 +4,7 @@ use ajazz_rgb::effects::{EffectMode, EffectSettings};
 use ajazz_rgb::layout::TOTAL_LEDS;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -43,7 +44,10 @@ pub enum DaemonRequest {
     StartMusic {
         style: String,
         color: Option<String>,
+        palette: Option<String>,
         sensitivity: Option<f32>,
+        noise_gate: Option<f32>,
+        source: Option<String>,
         fps: Option<u32>,
     },
     StopMusic,
@@ -111,7 +115,7 @@ pub struct HardwareCoordinator {
     pub available_devices: Vec<DiscoveredDevice>,
     pub preferred_connection: Option<HardwareConnection>,
     pub last_error: Option<String>,
-    direct_device: Option<AjazzDevice>,
+    direct_device: Option<Arc<AjazzDevice>>,
     custom_matrix: [Color; TOTAL_LEDS],
 }
 
@@ -127,6 +131,10 @@ impl HardwareCoordinator {
             direct_device: None,
             custom_matrix: [Color::BLACK; TOTAL_LEDS],
         }
+    }
+
+    pub fn direct_device(&self) -> Option<Arc<AjazzDevice>> {
+        self.direct_device.as_ref().map(Arc::clone)
     }
 
     /// Set preferred hardware connection (Wired, 2.4G, Bluetooth, or None for Auto)
@@ -194,7 +202,7 @@ impl HardwareCoordinator {
                 self.status = st;
                 self.mode = ConnectionMode::ConnectedDirectHid;
                 self.last_error = None;
-                self.direct_device = Some(dev);
+                self.direct_device = Some(Arc::new(dev));
             }
             Err(e) => {
                 self.mode = ConnectionMode::Disconnected;
@@ -311,19 +319,25 @@ impl HardwareCoordinator {
         }
     }
 
-    /// Start music visualizer stream in background.
+    /// Start music visualizer stream in background or prepare direct device.
     pub fn start_music_stream(
         &mut self,
         style: &str,
         color: Option<Color>,
+        palette: Option<&str>,
         sensitivity: f32,
+        noise_gate: Option<f32>,
+        source: Option<&str>,
         fps: u32,
     ) -> Result<(), String> {
         if self.mode == ConnectionMode::ConnectedDaemon {
             let req = DaemonRequest::StartMusic {
                 style: style.to_string(),
                 color: color.map(|c| c.to_hex()),
+                palette: palette.map(|p| p.to_string()),
                 sensitivity: Some(sensitivity),
+                noise_gate,
+                source: source.map(|s| s.to_string()),
                 fps: Some(fps),
             };
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
@@ -333,8 +347,10 @@ impl HardwareCoordinator {
                 Err(e) => Err(e),
                 _ => Ok(()),
             }
+        } else if let Some(ref dev) = self.direct_device {
+            dev.enter_live_music_mode().map_err(|e| e.to_string())
         } else {
-            Err("Music visualization requires the background daemon (ak820d)".to_string())
+            Err("No keyboard connection available".to_string())
         }
     }
 
@@ -343,10 +359,13 @@ impl HardwareCoordinator {
         &mut self,
         style: &str,
         color: Option<Color>,
+        palette: Option<&str>,
         sensitivity: f32,
+        noise_gate: Option<f32>,
+        source: Option<&str>,
         fps: u32,
     ) -> Result<(), String> {
-        self.start_music_stream(style, color, sensitivity, fps)
+        self.start_music_stream(style, color, palette, sensitivity, noise_gate, source, fps)
     }
 
     /// Stop background music visualizer.

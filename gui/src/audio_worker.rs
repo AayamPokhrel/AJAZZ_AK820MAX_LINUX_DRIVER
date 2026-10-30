@@ -1,5 +1,9 @@
-use ajazz_audio::capture::AudioCapture;
-use ajazz_audio::spectrum::SpectrumAnalyzer;
+use ajazz_audio::capture::{AudioCapture, AudioSource};
+use ajazz_audio::spectrum::{SpectrumAnalyzer, FFT_SIZE};
+use ajazz_audio::visualizer::{ColorPalette, MusicRenderer, VisualizerStyle};
+use ajazz_hid::AjazzDevice;
+use ajazz_rgb::color::Color;
+use ajazz_rgb::layout::TOTAL_LEDS;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -12,6 +16,7 @@ pub struct AudioVisualizerState {
     pub levels: [f32; 10],
     pub peaks: [f32; 10],
     pub bass: f32,
+    pub frame: [Color; TOTAL_LEDS],
     pub error: Option<String>,
 }
 
@@ -22,13 +27,25 @@ impl Default for AudioVisualizerState {
             levels: [0.0; 10],
             peaks: [0.0; 10],
             bass: 0.0,
+            frame: [Color::BLACK; TOTAL_LEDS],
             error: None,
         }
     }
 }
 
+#[derive(Clone, Debug)]
+struct WorkerConfig {
+    pub style: VisualizerStyle,
+    pub palette: ColorPalette,
+    pub custom_color: Option<Color>,
+    pub sensitivity: f32,
+    pub noise_gate: f32,
+    pub fps: u32,
+}
+
 pub struct AudioVisualizerWorker {
     state: Arc<Mutex<AudioVisualizerState>>,
+    config: Arc<Mutex<WorkerConfig>>,
     running: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
@@ -36,10 +53,19 @@ pub struct AudioVisualizerWorker {
 impl AudioVisualizerWorker {
     pub fn new() -> Self {
         let state = Arc::new(Mutex::new(AudioVisualizerState::default()));
+        let config = Arc::new(Mutex::new(WorkerConfig {
+            style: VisualizerStyle::Spectrum,
+            palette: ColorPalette::StockClassic,
+            custom_color: None,
+            sensitivity: 1.2,
+            noise_gate: 0.05,
+            fps: 60,
+        }));
         let running = Arc::new(AtomicBool::new(false));
 
         Self {
             state,
+            config,
             running,
             handle: None,
         }
@@ -53,19 +79,52 @@ impl AudioVisualizerWorker {
         self.running.load(Ordering::SeqCst)
     }
 
-    pub fn start(&mut self, sensitivity: f32) {
+    pub fn update_config(
+        &self,
+        style: VisualizerStyle,
+        palette: ColorPalette,
+        custom_color: Option<Color>,
+        sensitivity: f32,
+        noise_gate: f32,
+        fps: u32,
+    ) {
+        if let Ok(mut cfg) = self.config.lock() {
+            cfg.style = style;
+            cfg.palette = palette;
+            cfg.custom_color = custom_color;
+            cfg.sensitivity = sensitivity;
+            cfg.noise_gate = noise_gate;
+            cfg.fps = fps;
+        }
+    }
+
+    pub fn start(
+        &mut self,
+        style: VisualizerStyle,
+        palette: ColorPalette,
+        custom_color: Option<Color>,
+        sensitivity: f32,
+        noise_gate: f32,
+        fps: u32,
+        source: Option<AudioSource>,
+        direct_device: Option<Arc<AjazzDevice>>,
+    ) {
         if self.running.load(Ordering::SeqCst) {
+            self.update_config(style, palette, custom_color, sensitivity, noise_gate, fps);
             return;
         }
 
+        self.update_config(style, palette, custom_color, sensitivity, noise_gate, fps);
         self.running.store(true, Ordering::SeqCst);
+
         let state_clone = Arc::clone(&self.state);
+        let config_clone = Arc::clone(&self.config);
         let running_clone = Arc::clone(&self.running);
 
         let handle = thread::spawn(move || {
-            info!("Starting GUI Audio Capture Worker thread...");
-            let capture_res = AudioCapture::new(None);
-            let capture = match capture_res {
+            info!("Starting native GUI Audio Capture & Visualizer Worker thread...");
+
+            let capture = match AudioCapture::new(source) {
                 Ok(c) => c,
                 Err(e) => {
                     error!("Audio capture error: {}", e);
@@ -77,9 +136,24 @@ impl AudioVisualizerWorker {
                 }
             };
 
-            let mut analyzer = SpectrumAnalyzer::new(capture.sample_rate(), sensitivity);
-            let mut peaks = [0.0f32; 10];
-            let mut last_instant = Instant::now();
+            info!(
+                "Audio capture source connected: '{}' @ {} Hz",
+                capture.source_name(),
+                capture.sample_rate()
+            );
+
+            let initial_cfg = config_clone.lock().unwrap().clone();
+            let mut analyzer = SpectrumAnalyzer::new(capture.sample_rate(), initial_cfg.sensitivity);
+            analyzer.set_noise_gate(initial_cfg.noise_gate);
+
+            let mut renderer = MusicRenderer::new(initial_cfg.style, initial_cfg.custom_color);
+            renderer.set_palette(initial_cfg.palette);
+
+            if let Some(ref dev) = direct_device {
+                if let Err(e) = dev.enter_live_music_mode() {
+                    error!("Direct device live music mode initialization failed: {}", e);
+                }
+            }
 
             {
                 let mut st = state_clone.lock().unwrap();
@@ -87,42 +161,46 @@ impl AudioVisualizerWorker {
                 st.error = None;
             }
 
+            let mut last_instant = Instant::now();
+
             while running_clone.load(Ordering::SeqCst) {
                 let start_tick = Instant::now();
                 let dt = last_instant.elapsed().as_secs_f32().max(0.001);
-                last_instant = Instant::now();
+                last_instant = start_tick;
 
-                // Read audio samples from ring buffer
-                let samples = capture.read_latest(2048);
-                if !samples.is_empty() {
-                    analyzer.update(&samples);
+                // Sync dynamic config updates
+                let cur_fps = if let Ok(cfg) = config_clone.lock() {
+                    analyzer.set_sensitivity(cfg.sensitivity);
+                    analyzer.set_noise_gate(cfg.noise_gate);
+                    renderer.style = cfg.style;
+                    renderer.set_palette(cfg.palette.clone());
+                    cfg.fps
+                } else {
+                    60
+                };
+
+                let pcm = capture.read_latest(FFT_SIZE);
+                if !pcm.is_empty() {
+                    analyzer.update_with_dt(&pcm, dt);
                 }
 
-                let raw_levels = analyzer.levels();
-                let mut current_levels = [0.0f32; 10];
+                let frame = renderer.render(&analyzer, dt);
 
-                for i in 0..10 {
-                    let scaled = (raw_levels[i] * sensitivity).clamp(0.0, 1.0);
-                    current_levels[i] = scaled;
-
-                    // Peak decay animation
-                    if scaled >= peaks[i] {
-                        peaks[i] = scaled;
-                    } else {
-                        peaks[i] = (peaks[i] - dt * 0.8).max(0.0);
-                    }
+                // Stream physically to keyboard if direct connection is active
+                if let Some(ref dev) = direct_device {
+                    let _ = dev.send_live_frame(&frame);
                 }
 
-                // Update shared visualizer state
+                // Update shared state for GUI canvas and spectrum analyzer display
                 if let Ok(mut st) = state_clone.lock() {
-                    st.levels = current_levels;
-                    st.peaks = peaks;
-                    st.bass = (analyzer.bass * sensitivity).clamp(0.0, 1.0);
+                    st.levels = analyzer.levels();
+                    st.peaks = analyzer.peaks();
+                    st.bass = analyzer.bass;
+                    st.frame = frame;
                 }
 
-                // Sleep to maintain ~60 FPS
+                let target_interval = Duration::from_micros((1_000_000 / cur_fps.clamp(10, 90) as u64).max(11_111));
                 let elapsed = start_tick.elapsed();
-                let target_interval = Duration::from_micros(16_666);
                 if elapsed < target_interval {
                     thread::sleep(target_interval - elapsed);
                 }
@@ -134,8 +212,9 @@ impl AudioVisualizerWorker {
                 st.levels = [0.0; 10];
                 st.peaks = [0.0; 10];
                 st.bass = 0.0;
+                st.frame = [Color::BLACK; TOTAL_LEDS];
             }
-            info!("GUI Audio Capture Worker stopped.");
+            info!("GUI Audio Capture Worker stopped cleanly.");
         });
 
         self.handle = Some(handle);

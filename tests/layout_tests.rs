@@ -14,12 +14,14 @@ fn test_key_layout_integrity() {
 fn test_key_lookup() {
     let esc = find_key_by_name("esc").expect("esc key must exist");
     assert_eq!(esc.hid_code, 0x29);
-    assert_eq!(esc.led_idx, 15);
+    assert_eq!(esc.led_idx, 0);
+    assert_eq!(esc.hw_idx, 0);
 
     let space = find_key_by_name("space").expect("space key must exist");
     assert_eq!(space.hid_code, 0x2c);
-    assert_eq!(space.led_idx, 94);
+    assert_eq!(space.led_idx, 35);
+    assert_eq!(space.hw_idx, 35);
 
-    let by_led = find_key_by_led(15).expect("LED 15 must be Esc");
+    let by_led = find_key_by_led(0).expect("LED 0 must be Esc");
     assert_eq!(by_led.name, "esc");
 }

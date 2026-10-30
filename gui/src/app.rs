@@ -61,8 +61,8 @@ impl eframe::App for Ak820App {
 
         let t = self.start_instant.elapsed().as_secs_f32();
 
-        // Background status refresh every 5 seconds
-        if self.last_status_poll.elapsed().as_secs() >= 5 {
+        // Background status refresh every 5 seconds (paused during active music visualization to avoid USB contention)
+        if !self.audio_worker.is_active() && self.last_status_poll.elapsed().as_secs() >= 5 {
             self.last_status_poll = Instant::now();
             self.coordinator.refresh();
         }
@@ -189,10 +189,15 @@ impl eframe::App for Ak820App {
                                             });
                                         });
                                         ui.add_space(6.0);
+                                        let live_music_frame = if self.audio_worker.is_active() {
+                                            self.audio_worker.state().frame
+                                        } else {
+                                            preview_frame
+                                        };
                                         render_keyboard_canvas(
                                             ui,
                                             &mut self.canvas_state,
-                                            &preview_frame,
+                                            &live_music_frame,
                                             audio_levels_opt,
                                             false,
                                         );

@@ -279,17 +279,8 @@ pub fn render_keyboard_canvas(
             // Determine key illumination color
             let led_color = if is_custom_mode {
                 state.custom_colors[key.led_idx]
-            } else if let Some(bands) = audio_levels {
-                let band = key.audio_band.min(9);
-                let level = bands[band];
-                let norm_y = (key.rect.center_y() - 40.0) / 180.0;
-                let height_from_bottom = (1.0 - norm_y).clamp(0.0, 1.0);
-                if height_from_bottom <= level * 1.05 {
-                    let grad_col = ThemeColors::EQUALIZER_GRADIENT[band];
-                    Color::new(grad_col.r(), grad_col.g(), grad_col.b())
-                } else {
-                    preview_frame[key.led_idx]
-                }
+            } else if audio_levels.is_some() {
+                preview_frame[key.hw_idx]
             } else {
                 preview_frame[key.led_idx]
             };

@@ -1,5 +1,7 @@
 mod client;
 
+use ajazz_audio::capture::AudioSource;
+use ajazz_audio::visualizer::ColorPalette;
 use ajazz_audio::{AudioCapture, FFT_SIZE, MusicRenderer, SpectrumAnalyzer, VisualizerStyle};
 use ajazz_hid::{enumerate_devices, AjazzDevice, HardwareConnection, PowerState};
 use ajazz_rgb::color::{Color, PaletteColor};
@@ -75,16 +77,22 @@ enum Commands {
         color: String,
     },
 
-    #[command(about = "Start audio-reactive music RGB visualization")]
+    #[command(about = "Start audio-reactive music RGB visualization (Desktop Audio Loopback by default)")]
     Music {
         #[arg(short, long, default_value = "spectrum", help = "Style: spectrum, pulse, wave, soft-dance, passion")]
         style: String,
         #[arg(short, long, help = "Optional custom color tint (hex or name)")]
         color: Option<String>,
+        #[arg(short, long, help = "Color palette: classic, cyberpunk, thermal, oceanic, custom")]
+        palette: Option<String>,
         #[arg(short, long, default_value_t = 30, help = "Target FPS (10..=60)")]
         fps: u32,
-        #[arg(long, default_value_t = 1.0, help = "Microphone/audio sensitivity factor (0.1..=5.0)")]
+        #[arg(long, default_value_t = 1.2, help = "Audio sensitivity multiplier factor (0.1..=5.0)")]
         sensitivity: f32,
+        #[arg(long, default_value_t = 0.05, help = "Noise gate threshold to suppress background hum (0.0..=0.5)")]
+        noise_gate: f32,
+        #[arg(long, default_value = "system", help = "Audio source: system (desktop audio loopback), mic (microphone), or custom device name")]
+        source: String,
         #[arg(long, help = "Send to background daemon instead of running in foreground")]
         daemon: bool,
     },
@@ -321,15 +329,21 @@ async fn main() -> anyhow::Result<()> {
         Commands::Music {
             style,
             color,
+            palette,
             fps,
             sensitivity,
+            noise_gate,
+            source,
             daemon,
         } => {
             if daemon {
                 let req = DaemonRequest::StartMusic {
                     style: style.clone(),
                     color: color.clone(),
+                    palette: palette.clone(),
                     sensitivity: Some(sensitivity),
+                    noise_gate: Some(noise_gate),
+                    source: Some(source.clone()),
                     fps: Some(fps),
                 };
                 match try_daemon_request(req).await {
@@ -341,42 +355,97 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            // Foreground visualization
-            println!(
-                "{} Starting interactive foreground music visualization ({})",
-                "Music Studio:".magenta().bold(),
-                style.cyan()
-            );
-
             let vis_style = VisualizerStyle::from_name(&style)
                 .ok_or_else(|| anyhow::anyhow!("Unknown visualizer style '{}'", style))?;
 
+            let color_palette = if let Some(ref p_name) = palette {
+                ColorPalette::from_name(p_name).unwrap_or(ColorPalette::StockClassic)
+            } else if let Some(ref c_str) = color {
+                if let Ok(c) = Color::from_str(c_str) {
+                    ColorPalette::CustomGradient {
+                        base: c.scale(0.3),
+                        peak: c,
+                    }
+                } else {
+                    ColorPalette::StockClassic
+                }
+            } else {
+                ColorPalette::StockClassic
+            };
+
             let custom_tint = color.and_then(|c| Color::from_str(&c).ok());
+
+            let audio_src = match source.to_lowercase().as_str() {
+                "mic" | "microphone" => AudioSource::Microphone,
+                "system" | "loopback" | "desktop" => AudioSource::SystemLoopback,
+                name => AudioSource::Custom(name.to_string()),
+            };
+
+            // Foreground visualization
+            println!(
+                "{} Starting interactive foreground music visualization ({}, palette: {:?}, source: {:?})",
+                "Music Studio:".magenta().bold(),
+                style.cyan(),
+                color_palette,
+                audio_src
+            );
 
             let dev = AjazzDevice::open_with_preference(pref_mode, dev_override)?;
             println!("Target hardware: {} ({:?})", dev.info().devnode.cyan(), dev.connection_mode());
             dev.enter_live_music_mode()?;
 
-            let capture = AudioCapture::new(None)?;
-            println!("Default audio source initialized @ {} Hz", capture.sample_rate());
+            let capture = AudioCapture::new(Some(audio_src))?;
+            println!("Audio capture active on '{}' @ {} Hz", capture.source_name().green(), capture.sample_rate());
 
             let mut analyzer = SpectrumAnalyzer::new(capture.sample_rate(), sensitivity);
+            analyzer.set_noise_gate(noise_gate);
             let mut renderer = MusicRenderer::new(vis_style, custom_tint);
+            renderer.set_palette(color_palette);
 
             let target_fps = fps.clamp(10, 60);
             let frame_dur = Duration::from_micros((1_000_000 / target_fps as u64).max(16_666));
 
             println!("Streaming to keyboard at ~{} FPS. Press Ctrl+C to stop.", target_fps);
 
+            let mut last_instant = Instant::now();
+            let mut last_meter_print = Instant::now();
+
             loop {
                 let start = Instant::now();
+                let dt = last_instant.elapsed().as_secs_f32().max(0.001);
+                last_instant = start;
+
                 let pcm = capture.read_latest(FFT_SIZE);
                 if !pcm.is_empty() {
-                    analyzer.update(&pcm);
+                    analyzer.update_with_dt(&pcm, dt);
                 }
 
-                let frame = renderer.render(&analyzer, 0.033);
+                let frame = renderer.render(&analyzer, dt);
                 let _ = dev.send_live_frame(&frame);
+
+                // Print ASCII frequency meter every 100ms
+                if last_meter_print.elapsed() >= Duration::from_millis(100) {
+                    last_meter_print = Instant::now();
+                    let levels = analyzer.levels();
+                    let mut bar_str = String::from("\r[AUDIO] ");
+                    for l in levels.iter() {
+                        let blocks = (l * 8.0).round() as usize;
+                        let ch = match blocks {
+                            0 => ' ',
+                            1 => ' ',
+                            2 => '▂',
+                            3 => '▃',
+                            4 => '▄',
+                            5 => '▅',
+                            6 => '▆',
+                            7 => '▇',
+                            _ => '█',
+                        };
+                        bar_str.push(ch);
+                    }
+                    bar_str.push_str(&format!("  Bass: {:.0}%", analyzer.bass * 100.0));
+                    eprint!("{}", bar_str);
+                }
 
                 let elapsed = start.elapsed();
                 if elapsed < frame_dur {

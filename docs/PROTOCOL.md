@@ -122,10 +122,32 @@ Magic trailer:
   payload[127]: 0xA5
 ```
 
-#### Custom & Live Matrix Streaming (cmd = 0x0A SetLedRgbTab / 0x8A GetLedRgbTab, 512 bytes payload)
+#### Live Music Frame Streaming (cmd = 0x08 SendMusicData, 378 bytes payload)
+Reconstructed directly from `OemDrv.exe` `CDevG5KB::SendMusicData` (`0x0048bda0`) and `CDevG5KB::AccessData` (`0x0048abe0`):
+
 ```
-payload[0..323]: 108 RGB LEDs × 3 bytes (R at i*3, G at i*3+1, B at i*3+2)
-payload[324..509]: Zero padding
+Offset 0: 0x06 (HID Report ID 6)
+Offset 1: 0x08 (Command: SendMusicData)
+Offset 2: 0x01 (nOper: Write)
+Offset 3: 0x00
+Offset 4: 0x01 (total_chunks)
+Offset 5: 0x00 (chunk_index)
+Offset 6: 0x7A (len low: 122)
+Offset 7: 0x01 (len high: 1 -> total length = 0x017A / 378 bytes = 126 key slots * 3)
+Offset 8..385: 126 keys * 3 bytes (Interleaved R, G, B at hw_idx * 3)
+Offset 386..519: Zero padding (No trailing magic bytes required for CMD 0x08)
+```
+
+##### Root Cause of Hardware LED Blackout Bug & Resolution:
+1. **Mode Setting Collision**: The keyboard MCU requires setting the hardware lighting effect to Mode 17 (`Music`) via CMD `0x04` before streaming. Setting Mode 21 (`Custom`) caused the MCU to switch to its unprogrammed EEPROM user-matrix, which defaulted to pitch black.
+2. **Command ID Collision**: CMD `0x0A` (`SetLedRgbTab`) is intended for writing persistent custom matrices into onboard flash/SRAM. Per-frame execution of `0x0A` caused the MCU to reject subsequent packets. CMD `0x08` (`SendMusicData`) is the hardware real-time latch packet that immediately renders RGB data directly onto the keyboard's physical LEDs without flash wear.
+3. **Hardware LED Matrix Addressing**: The MCU does not index LEDs sequentially from `0..81`. Instead, it routes RGB values based on physical matrix positions defined in `KB.ini` (`0..95`). Passing sequential indices shifted or corrupted key illumination.
+4. **USB Endpoint & Status Polling Contention**: Periodic background polling (`GetLED`, `GetCfg`, or battery requests) interrupts the live streaming buffer latch. Background queries must be paused or safely interleaved during active audio streaming.
+
+#### Custom Matrix Storage (cmd = 0x0A SetLedRgbTab / 0x8A GetLedRgbTab, 512 bytes payload)
+```
+payload[0..377]: 126 keys × 3 bytes (R at hw_idx*3, G at hw_idx*3+1, B at hw_idx*3+2)
+payload[378..509]: Zero padding
 payload[510]: 0x5A (Magic trailer byte 1)
 payload[511]: 0xA5 (Magic trailer byte 2)
 ```
@@ -164,20 +186,100 @@ Offset 5..63: Payload (zero-padded)
 
 ---
 
-## 4. Physical Layout & Equalizer Mapping
+## 4. Physical Layout, Hardware LED Matrix & Equalizer Mapping
 
-### Audio Equalizer Bands (Derived from `audiobar.txt`)
-The 82 physical keys of the AK820 Max are assigned to 10 distinct equalizer frequency bands across the board's columns:
+### 4.1 BY-COMBO Hardware Matrix Table (`KB.ini`)
+Extracted from `OemDrv.exe` configuration table parser:
+
+| Key | HW Index | Key | HW Index | Key | HW Index | Key | HW Index |
+|---|---|---|---|---|---|---|---|
+| `Esc` | 0 | `F1` | 6 | `F2` | 12 | `F3` | 18 |
+| `F4` | 24 | `F5` | 30 | `F6` | 36 | `F7` | 42 |
+| `F8` | 48 | `F9` | 54 | `F10` | 60 | `F11` | 66 |
+| `F12` | 72 | `Del` | 78 | `~ / \`` | 1 | `1` | 7 |
+| `2` | 13 | `3` | 19 | `4` | 25 | `5` | 31 |
+| `6` | 37 | `7` | 43 | `8` | 49 | `9` | 55 |
+| `0` | 61 | `-_` | 67 | `+=` | 73 | `Backspace` | 79 |
+| `Tab` | 2 | `Q` | 8 | `W` | 14 | `E` | 20 |
+| `R` | 26 | `T` | 32 | `Y` | 38 | `U` | 44 |
+| `I` | 50 | `O` | 56 | `P` | 62 | `[{` | 68 |
+| `]}` | 74 | `\|` | 80 | `CapsLock` | 3 | `A` | 9 |
+| `S` | 15 | `D` | 21 | `F` | 27 | `G` | 33 |
+| `H` | 39 | `J` | 45 | `K` | 51 | `L` | 57 |
+| `;:` | 63 | `'" ` | 69 | `Enter` | 76 | `LShift` | 4 |
+| `Z` | 10 | `X` | 16 | `C` | 22 | `V` | 28 |
+| `B` | 34 | `N` | 40 | `M` | 46 | `,<` | 52 |
+| `.>` | 58 | `/?` | 64 | `RShift` | 70 | `LCtrl` | 5 |
+| `LWin` | 11 | `LAlt` | 17 | `Space` | 35 | `RAlt` | 59 |
+| `Fn` | 65 | `RCtrl` | 71 | `Left` | 77 | `Up` | 82 |
+| `Down` | 83 | `Right` | 95 | `PgUp` | 90 | `PgDn` | 89 |
+| `Home` | 91 | `End` | 85 | Knob | N/A | | |
+
+### 4.2 Audio Equalizer Bands & Height Stages (Derived from `audiobar.txt`)
+The 82 physical keys are mapped to 10 distinct equalizer frequency bands and 6 vertical height stages (0=bottom, 5=top):
 
 | Band | Frequency Range | Physical Key Column (Bottom to Top) |
 |---|---|---|
-| **0** | Sub-Bass (40–100 Hz) | `LCtrl`, `LShift`, `CapsLock`, `Tab`, `Q`, `~`, `1`, `Esc`, `F1` |
-| **1** | Bass (100–250 Hz) | `LWin`, `LAlt`, `Z`, `A`, `S`, `W`, `2`, `3`, `F2`, `F3` |
-| **2** | Low-Mids (250–500 Hz) | `X`, `C`, `D`, `E`, `R`, `4`, `F4` |
-| **3** | Mids (500–1000 Hz) | `V`, `F`, `G`, `T`, `5`, `6`, `F5` |
-| **4** | Mid-Highs (1–2 kHz) | `Space`, `B`, `N`, `H`, `Y`, `U`, `7`, `F6`, `F7` |
-| **5** | Presence (2–4 kHz) | `M`, `J`, `K`, `I`, `8`, `9`, `F8` |
-| **6** | Brilliance (4–6 kHz) | `RAlt`, `<`, `>`, `L`, `O`, `P`, `0`, `F9` |
-| **7** | Treble (6–8 kHz) | `Fn`, `?`, `;`, `'`, `[`, `-`, `=`, `F10`, `F11` |
-| **8** | High Treble (8–12 kHz) | `RCtrl`, `Left`, `Down`, `RShift`, `Up`, `Enter`, `]`, `\`, `Backspace`, `Del`, `F12` |
-| **9** | Air (12–16 kHz) | `Right`, `End`, `PgDn`, `PgUp`, `Home` |
+| **0** | Sub-Bass (40–100 Hz) | `LCtrl` (0), `LShift` (1), `CapsLock` (2), `Tab` (3), `Q` (4), `~` (4), `1` (5), `Esc` (5), `F1` (5) |
+| **1** | Bass (100–250 Hz) | `LWin` (0), `LAlt` (0), `Z` (1), `A` (2), `S` (2), `W` (3), `2` (4), `3` (4), `F2` (5), `F3` (5) |
+| **2** | Low-Mids (250–500 Hz) | `X` (1), `C` (1), `D` (2), `E` (3), `R` (3), `4` (4), `F4` (4) |
+| **3** | Mids (500–1000 Hz) | `V` (1), `F` (2), `G` (2), `T` (3), `5` (4), `6` (4), `F5` (4) |
+| **4** | Mid-Highs (1–2 kHz) | `Space` (0), `B` (1), `N` (1), `H` (2), `Y` (3), `U` (3), `7` (4), `F6` (5), `F7` (5) |
+| **5** | Presence (2–4 kHz) | `M` (1), `J` (2), `K` (2), `I` (3), `8` (4), `9` (4), `F8` (4) |
+| **6** | Brilliance (4–6 kHz) | `RAlt` (0), `,<` (1), `.>` (1), `L` (2), `O` (3), `P` (3), `0` (4), `F9` (5) |
+| **7** | Treble (6–8 kHz) | `Fn` (0), `/?` (1), `;:` (2), `'" ` (2), `[{` (3), `-_` (4), `+=` (4), `F10` (5), `F11` (5) |
+| **8** | High Treble (8–12 kHz) | `RCtrl` (0), `Left` (0), `Down` (0), `RShift` (1), `Up` (1), `Enter` (2), `]}` (3), `\|` (3), `Backspace` (4), `Del` (5), `F12` (5) |
+| **9** | Air (12–16 kHz) | `Right` (0), `End` (1), `PgDn` (2), `PgUp` (3), `Home` (4) |
+
+---
+
+## 5. Linux Audio Pipeline Architecture
+
+```
+                  ┌────────────────────────────────────────┐
+                  │ System Audio Playback (Spotify, MPV,   │
+                  │ Browser, Steam, Discord, Games)        │
+                  └───────────────────┬────────────────────┘
+                                      │ Audio stream
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │ PipeWire / PulseAudio Output Sink      │
+                  └───────────────────┬────────────────────┘
+                                      │ Monitor Stream
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │ libpulse-simple-binding                │
+                  │ Target: @DEFAULT_MONITOR@              │
+                  └───────────────────┬────────────────────┘
+                                      │ 48 kHz / 16-bit PCM (Ring Buffer)
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │ SpectrumAnalyzer (ajazz-audio)         │
+                  │ 1024-pt Radix-4 FFT + Hann Window      │
+                  │ Fast Attack + Exponential Decay Ballist│
+                  │ Peak Hold Ticks + Dynamic Noise Gate   │
+                  └───────────────────┬────────────────────┘
+                                      │ 10-band Levels [0.0..1.0]
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │ MusicRenderer (ajazz-audio)            │
+                  │ Palettes: Classic, Cyberpunk, Thermal, │
+                  │ Oceanic, Custom Dual-Color Gradient    │
+                  │ Styles: Spectrum, Pulse, Wave, Passion │
+                  └─────────┬────────────────────┬─────────┘
+                            │                    │
+          Rendered Frame    │                    │ Rendered Frame
+          [Color; 108]      ▼                    ▼ [Color; 108]
+           ┌─────────────────────┐    ┌──────────────────────────┐
+           │ ak820-gui Canvas    │    │ USB / HID Driver Layer   │
+           │ Synchronized 82-Key │    │ CMD 0x08 (SendMusicData) │
+           │ Live Keycap Display │    │ Report ID 6 (520 bytes)  │
+           └─────────────────────┘    └────────────┬─────────────┘
+                                                   │
+                                                   ▼
+                                      ┌──────────────────────────┐
+                                      │ Physical AK820 Max LEDs  │
+                                      │ (Hardware Synced @ 50FPS)│
+                                      └──────────────────────────┘
+```
+

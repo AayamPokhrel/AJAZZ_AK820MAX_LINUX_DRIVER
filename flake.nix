@@ -37,6 +37,7 @@
 
           buildInputs = with pkgs; [
             alsa-lib
+            libpulseaudio
             systemd
             libudev-zero
             wayland
@@ -59,6 +60,7 @@
             libxrandr
             libxi
             alsa-lib
+            libpulseaudio
           ]);
 
           shellHook = ''

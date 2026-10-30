@@ -303,6 +303,30 @@ pub fn bycombo_wireless_lighting_packet(settings: &EffectSettings) -> Vec<u8> {
     )
 }
 
+/// Build full Report ID 6 live music frame packet (520 bytes) for BY-COMBO Wired mode
+/// 1:1 vendor implementation from CDevG5KB::SendMusicData (CMD 0x08, len 0x017A / 378 bytes)
+pub fn bycombo_wired_live_music_packet(matrix: &[Color; TOTAL_LEDS]) -> Vec<u8> {
+    let mut pkt = vec![0u8; 520];
+    pkt[0] = 0x06; // Report ID 6
+    pkt[1] = 0x08; // cmd = 0x08 (SendMusicData)
+    pkt[2] = 0x01; // nOper = 1 (Write)
+    pkt[3] = 0x00;
+    pkt[4] = 0x01; // total_chunks = 1
+    pkt[5] = 0x00; // chunk_index = 0
+    pkt[6] = 0x7A; // len lo = 122 (0x7A)
+    pkt[7] = 0x01; // len hi = 1 -> 378 bytes (0x017A)
+
+    // Populate keys directly by hardware LED matrix index
+    for (i, c) in matrix.iter().enumerate().take(126) {
+        let off = 8 + i * 3;
+        pkt[off] = c.r;
+        pkt[off + 1] = c.g;
+        pkt[off + 2] = c.b;
+    }
+
+    pkt
+}
+
 /// Request matrix RGB dump via Report ID 6 GetLedRgbTab
 pub fn bycombo_wired_get_matrix_request() -> Vec<u8> {
     let mut req = vec![0u8; 520];
@@ -327,8 +351,8 @@ pub fn bycombo_wired_matrix_packet(matrix: &[Color; TOTAL_LEDS]) -> Vec<u8> {
     pkt[6] = 0x00; // len lo = 512 (0x0200)
     pkt[7] = 0x02; // len hi = 2
 
-    // Populate 108 RGB LEDs (3 bytes each)
-    for (i, c) in matrix.iter().enumerate() {
+    // Populate keys directly by hardware LED matrix index
+    for (i, c) in matrix.iter().enumerate().take(126) {
         let off = 8 + i * 3;
         if off + 2 < 8 + 510 {
             pkt[off] = c.r;
@@ -343,6 +367,7 @@ pub fn bycombo_wired_matrix_packet(matrix: &[Color; TOTAL_LEDS]) -> Vec<u8> {
 
     pkt
 }
+
 
 /// Request device configuration dump via Report ID 6 GetCfg (0x83)
 pub fn bycombo_wired_get_cfg_request() -> Vec<u8> {

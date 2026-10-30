@@ -5,6 +5,8 @@ pub const FFT_SIZE: usize = 2048;
 pub const AUDIO_BANDS: usize = 10;
 pub const F_LO: f32 = 40.0;
 pub const F_HI: f32 = 16000.0;
+pub const PEAK_HOLD_SECS: f32 = 0.25;
+pub const PEAK_FALL_SPEED: f32 = 1.6;
 
 pub struct SpectrumAnalyzer {
     fft: Arc<dyn RealToComplex<f32>>,
@@ -12,8 +14,11 @@ pub struct SpectrumAnalyzer {
     bins: Vec<(usize, usize)>,
     tilt: Vec<f32>,
     levels: [f32; AUDIO_BANDS],
+    peaks: [f32; AUDIO_BANDS],
+    peak_timers: [f32; AUDIO_BANDS],
     peak_db: f32,
     sensitivity: f32,
+    noise_gate: f32,
     pub energy: f32,
     pub bass: f32,
 }
@@ -60,19 +65,40 @@ impl SpectrumAnalyzer {
             bins,
             tilt,
             levels: [0.0; AUDIO_BANDS],
+            peaks: [0.0; AUDIO_BANDS],
+            peak_timers: [0.0; AUDIO_BANDS],
             peak_db: -30.0,
-            sensitivity: sensitivity.max(0.1),
+            sensitivity: sensitivity.clamp(0.1, 5.0),
+            noise_gate: 0.03,
             energy: 0.0,
             bass: 0.0,
         }
     }
 
     pub fn set_sensitivity(&mut self, s: f32) {
-        self.sensitivity = s.max(0.1);
+        self.sensitivity = s.clamp(0.1, 5.0);
     }
 
-    /// Process input PCM samples and update spectrum levels in 0.0..=1.0.
+    pub fn sensitivity(&self) -> f32 {
+        self.sensitivity
+    }
+
+    pub fn set_noise_gate(&mut self, gate: f32) {
+        self.noise_gate = gate.clamp(0.0, 0.4);
+    }
+
+    pub fn noise_gate(&self) -> f32 {
+        self.noise_gate
+    }
+
+    /// Process input PCM samples and update spectrum levels (assumes default dt ~0.033).
     pub fn update(&mut self, pcm: &[f32]) -> [f32; AUDIO_BANDS] {
+        self.update_with_dt(pcm, 0.033)
+    }
+
+    /// Process input PCM samples and update spectrum levels with physics-based delta time.
+    pub fn update_with_dt(&mut self, pcm: &[f32], dt: f32) -> [f32; AUDIO_BANDS] {
+        let dt = dt.clamp(0.005, 0.1);
         let mut input = vec![0.0f32; FFT_SIZE];
         if pcm.len() >= FFT_SIZE {
             let start = pcm.len() - FFT_SIZE;
@@ -123,22 +149,54 @@ impl SpectrumAnalyzer {
         self.peak_db = max_db.max(self.peak_db - 0.15).max(-60.0);
         let dynamic_span = 40.0 / self.sensitivity;
 
+        // Physics-based decay factor scaled by dt
+        let decay_factor = (-2.8 * dt).exp().clamp(0.70, 0.95);
+
         for (i, &db) in dbs.iter().enumerate() {
             let norm = ((db - (self.peak_db - dynamic_span)) / dynamic_span).clamp(0.0, 1.0);
-            let val = if max_db < -70.0 { 0.0 } else { norm };
+            let val = if max_db < -70.0 || norm < self.noise_gate {
+                0.0
+            } else {
+                norm
+            };
 
-            // Fast attack, smooth decay
-            self.levels[i] = val.max(self.levels[i] * 0.82);
+            // Fast attack, smooth-gravity exponential decay
+            if val > self.levels[i] {
+                // Instant punch on transients (attack)
+                self.levels[i] = val;
+            } else {
+                // Smooth gravitational drop
+                self.levels[i] = (self.levels[i] * decay_factor).max(val);
+            }
+
+            // Peak Hold ballistics
+            if self.levels[i] >= self.peaks[i] {
+                self.peaks[i] = self.levels[i];
+                self.peak_timers[i] = PEAK_HOLD_SECS;
+            } else if self.peak_timers[i] > 0.0 {
+                self.peak_timers[i] -= dt;
+            } else {
+                // Peak drops with gravity
+                self.peaks[i] = (self.peaks[i] - PEAK_FALL_SPEED * dt).max(self.levels[i]);
+            }
         }
 
         self.energy = self.levels.iter().sum::<f32>() / AUDIO_BANDS as f32;
         let raw_bass = self.levels[0..3.min(AUDIO_BANDS)].iter().copied().fold(0.0f32, f32::max);
-        self.bass = raw_bass.max(self.bass * 0.85);
+        self.bass = if raw_bass > self.bass {
+            raw_bass
+        } else {
+            self.bass * decay_factor
+        };
 
         self.levels
     }
 
     pub fn levels(&self) -> [f32; AUDIO_BANDS] {
         self.levels
+    }
+
+    pub fn peaks(&self) -> [f32; AUDIO_BANDS] {
+        self.peaks
     }
 }

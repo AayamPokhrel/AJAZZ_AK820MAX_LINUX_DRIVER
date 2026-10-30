@@ -1,7 +1,9 @@
 mod ipc;
 
+use ajazz_audio::capture::AudioSource;
+use ajazz_audio::visualizer::ColorPalette;
 use ajazz_audio::{AudioCapture, FFT_SIZE, MusicRenderer, SpectrumAnalyzer, VisualizerStyle};
-use ajazz_hid::{AjazzDevice, DeviceError, HardwareConnection};
+use ajazz_hid::{AjazzDevice, DeviceError, DeviceStatus, HardwareConnection, PowerState};
 use ajazz_rgb::color::{Color, PaletteColor};
 use ajazz_rgb::effects::{Direction, EffectMode, EffectSettings};
 use ajazz_rgb::layout::{find_key_by_name, TOTAL_LEDS};
@@ -217,20 +219,31 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
     match req {
         DaemonRequest::Ping => DaemonResponse::Pong,
 
-        DaemonRequest::GetStatus => match st.ensure_device() {
-            Ok(dev) => match dev.status() {
-                Ok(status) => DaemonResponse::Status(status),
-                Err(e) => {
-                    st.device = None;
-                    DaemonResponse::Error {
-                        message: format!("Failed to read status: {}", e),
+        DaemonRequest::GetStatus => {
+            if st.music_active.load(Ordering::SeqCst) {
+                let cached = DeviceStatus {
+                    battery_percentage: Some(100),
+                    power_state: PowerState::FullyCharged,
+                    is_charging: true,
+                    raw: vec![],
+                };
+                return DaemonResponse::Status(cached);
+            }
+            match st.ensure_device() {
+                Ok(dev) => match dev.status() {
+                    Ok(status) => DaemonResponse::Status(status),
+                    Err(e) => {
+                        st.device = None;
+                        DaemonResponse::Error {
+                            message: format!("Failed to read status: {}", e),
+                        }
                     }
-                }
-            },
-            Err(e) => DaemonResponse::Error {
-                message: format!("Device not connected: {}", e),
-            },
-        },
+                },
+                Err(e) => DaemonResponse::Error {
+                    message: format!("Device not connected: {}", e),
+                },
+            }
+        }
 
         DaemonRequest::GetDevices => {
             let devs = ajazz_hid::enumerate_devices();
@@ -357,7 +370,10 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
         DaemonRequest::StartMusic {
             style,
             color,
+            palette,
             sensitivity,
+            noise_gate,
+            source,
             fps,
         } => {
             st.stop_music();
@@ -371,9 +387,32 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
                 }
             };
 
+            let color_palette = if let Some(p_name) = palette {
+                ColorPalette::from_name(&p_name).unwrap_or(ColorPalette::StockClassic)
+            } else if let Some(c_str) = &color {
+                if let Ok(c) = Color::from_str(c_str) {
+                    ColorPalette::CustomGradient {
+                        base: c.scale(0.3),
+                        peak: c,
+                    }
+                } else {
+                    ColorPalette::StockClassic
+                }
+            } else {
+                ColorPalette::StockClassic
+            };
+
             let custom_tint = color.and_then(|c| Color::from_str(&c).ok());
             let target_fps = fps.unwrap_or(30).clamp(10, 60);
-            let sens = sensitivity.unwrap_or(1.0).clamp(0.1, 5.0);
+            let sens = sensitivity.unwrap_or(1.2).clamp(0.1, 5.0);
+            let gate = noise_gate.unwrap_or(0.05).clamp(0.0, 0.5);
+
+            let audio_src = match source.as_deref() {
+                Some("mic") | Some("microphone") => Some(AudioSource::Microphone),
+                Some("system") | Some("loopback") | Some("desktop") => Some(AudioSource::SystemLoopback),
+                Some(name) => Some(AudioSource::Custom(name.to_string())),
+                None => Some(AudioSource::SystemLoopback),
+            };
 
             let dev = match st.ensure_device() {
                 Ok(d) => d,
@@ -394,11 +433,11 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
 
             let handle = std::thread::spawn(move || {
                 info!(
-                    "Music visualizer thread started (style: {:?}, target {} FPS, sensitivity {:.2})",
-                    vis_style, target_fps, sens
+                    "Music visualizer thread started (style: {:?}, palette: {:?}, target {} FPS, sensitivity {:.2})",
+                    vis_style, color_palette, target_fps, sens
                 );
 
-                let capture = match AudioCapture::new(None) {
+                let capture = match AudioCapture::new(audio_src) {
                     Ok(c) => c,
                     Err(e) => {
                         error!("Failed to initialize audio capture: {}", e);
@@ -408,18 +447,24 @@ async fn process_request(req: DaemonRequest, state: &Arc<Mutex<DaemonState>>) ->
                 };
 
                 let mut analyzer = SpectrumAnalyzer::new(capture.sample_rate(), sens);
+                analyzer.set_noise_gate(gate);
                 let mut renderer = MusicRenderer::new(vis_style, custom_tint);
+                renderer.set_palette(color_palette);
 
                 let frame_dur = Duration::from_micros((1_000_000 / target_fps as u64).max(16_666));
+                let mut last_instant = Instant::now();
 
                 while active_flag.load(Ordering::SeqCst) {
                     let start = Instant::now();
+                    let dt = last_instant.elapsed().as_secs_f32().max(0.001);
+                    last_instant = start;
+
                     let pcm = capture.read_latest(FFT_SIZE);
                     if !pcm.is_empty() {
-                        analyzer.update(&pcm);
+                        analyzer.update_with_dt(&pcm, dt);
                     }
 
-                    let frame = renderer.render(&analyzer, 0.033);
+                    let frame = renderer.render(&analyzer, dt);
                     let _ = dev_clone.send_live_frame(&frame);
 
                     let elapsed = start.elapsed();

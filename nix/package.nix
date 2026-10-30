@@ -3,6 +3,7 @@
 , pkg-config
 , makeWrapper
 , alsa-lib
+, libpulseaudio
 , systemd
 , wayland
 , libxkbcommon
@@ -31,6 +32,7 @@ rustPlatform.buildRustPackage {
 
   buildInputs = [
     alsa-lib
+    libpulseaudio
     systemd
     wayland
     libxkbcommon
@@ -58,19 +60,22 @@ rustPlatform.buildRustPackage {
       install -Dm644 assets/icons/hicolor/$size/apps/ajazz-ak820-max.png $out/share/icons/hicolor/$size/apps/ajazz-ak820-max.png
     done
 
-    # Wrap GUI binary with runtime graphical & audio libraries for Wayland and X11
-    wrapProgram $out/bin/ak820-gui \
-      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [
-        wayland
-        libxkbcommon
-        libGL
-        vulkan-loader
-        libx11
-        libxcursor
-        libxrandr
-        libxi
-        alsa-lib
-      ]}
+    # Wrap GUI and daemon binaries with runtime graphical & audio libraries
+    for bin in ak820-gui ak820d ak820ctl; do
+      wrapProgram $out/bin/$bin \
+        --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [
+          wayland
+          libxkbcommon
+          libGL
+          vulkan-loader
+          libx11
+          libxcursor
+          libxrandr
+          libxi
+          alsa-lib
+          libpulseaudio
+        ]}
+    done
   '';
 
   meta = with lib; {

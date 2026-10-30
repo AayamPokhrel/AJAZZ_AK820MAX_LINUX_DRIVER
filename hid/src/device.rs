@@ -231,7 +231,7 @@ impl AjazzDevice {
                 std::thread::sleep(Duration::from_millis(20));
             }
             ProtocolVariant::ByComboWired => {
-                // Switch to Custom / Matrix mode (hw 21)
+                // Switch to Music mode (hw 17) so the keyboard stays lit and ready for audio streaming
                 let get_req = bycombo_wired_get_led_request();
                 let mut current_buf = vec![0u8; 520];
                 if t.send_feature(&get_req).is_ok() {
@@ -244,7 +244,7 @@ impl AjazzDevice {
                     None
                 };
                 let settings = EffectSettings {
-                    mode: ajazz_rgb::effects::EffectMode::Custom,
+                    mode: ajazz_rgb::effects::EffectMode::Music,
                     brightness: 5,
                     speed: 4,
                     direction: ajazz_rgb::effects::Direction::Right,
@@ -276,7 +276,7 @@ impl AjazzDevice {
                 }
             }
             ProtocolVariant::ByComboWired => {
-                let pkt = bycombo_wired_matrix_packet(frame);
+                let pkt = bycombo_wired_live_music_packet(frame);
                 t.send_feature(&pkt)?;
             }
         }
