@@ -1,261 +1,297 @@
-# Ajazz AK820 Max — Linux Native Driver, GUI Studio & RGB Music Visualizer
+# Ajazz AK820 Max — Linux Userspace Driver and Control Suite
 
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
-[![Version: 1.2.0](https://img.shields.io/badge/Version-v1.2.0-brightgreen.svg)](Cargo.toml)
-[![NixOS](https://img.shields.io/badge/NixOS-Flake%20Ready-5277C3.svg?logo=nixos&logoColor=white)](flake.nix)
-[![Rust 2021](https://img.shields.io/badge/Rust-2021%20Edition-DEA584.svg?logo=rust&logoColor=white)](Cargo.toml)
+A native Linux userspace driver, graphical control studio (`ak820-gui`), command-line utility (`ak820ctl`), and background daemon (`ak820d`) for the Ajazz AK820 Max mechanical keyboard.
 
-A complete, high-performance, Rust-native Linux userspace driver, graphical studio (`ak820-gui`), command-line utility (`ak820ctl`), background daemon (`ak820d`), and real-time audio-reactive music visualizer for the **Ajazz AK820 Max** mechanical keyboard.
-
-Built natively for **Linux & NixOS**, this project serves as a full, drop-in replacement for the vendor's Windows-only utility (`ajaz_ak820max.exe`), supporting both **BY-COMBO / SinoWealth** and **Shinetek / EVision** hardware controller revisions in both **2.4GHz Wireless** and **USB-C Wired** modes.
-
----
-
-## What's New in v1.2.0
-
-- ⌨️ **Interactive Typing Reactive RGB Modes in Lighting Effects Studio**:
-  - **Random Gradient Splash**: Keypresses activate dynamic multi-color spatial gradient waves that ripple outward and smoothly settle.
-  - **Chaos FX Roulette**: Keystrokes randomly trigger dynamic visual phenomena (lasers, shockwaves, thermal bursts, starbursts).
-  - **Neon Shockwave**: Radial circular shockwaves expand from the pressed key at 500 px/s with real-time wave interference.
-  - **Thermal Fire Heatmap**: Physical heat diffusion simulation mapping keystroke rate to an incandescent blackbody/fire ramp.
-  - **Matrix Code Rain**: Keystrokes cascade phosphor-green digital rain drops down the key's column with luminous white heads.
-  - **Crossfire Lasers**: Horizontal and vertical neon beams radiating across the keyboard matrix on keypress.
-  - **Starlight Supernova & Sparks**: Particle sparklers exploding from pressed keys with physics and gentle afterglow.
-  - **Cosmic Aurora Surge**: Undulating ribbons of violet/turquoise aurora surging with typing rhythm and keystroke velocity.
-- 🎯 **Fixed Mismatched Hardware Effect Mode IDs (`kb-k600t.xml`)**:
-  - Audited and realigned all 16 built-in hardware lighting effects to their verified firmware IDs: Ripple L-R (1), Starry (2), Ripple U-D (3), Flash Away/Ejection (4), Spectrum (5), Kaleidoscope (6), Static (7), Breathing (8), Cross/Blossom (9), Single Key Reactive (11), Picture Scroll (12), Waterfall (15), Raindrops (16), Windmill (17), Sine Wave (18), Storm/Galloping (19).
-- ⚡ **Zero-Lag evdev Input Listener**:
-  - Direct non-blocking physical key event capture (`/dev/input/by-id/*BY_Tech*event-kbd`) integrated into the daemon live streaming pipeline (30-60 FPS) without grabbing exclusive mode. Standard typing remains 100% fluid and unaffected.
-
-- 🔬 **1:1 Vendor Binary Reverse-Engineered Driver (`OemDrv.exe` & `CDevG5KB`)**:
-  - Replaced all heuristic framing with the exact vendor binary communication protocol decompiled from `OemDrv.exe` (`0x0048abe0` `AccessData`, `0x0048b2d0` `SetLED`, `0x0048b970` `SetLedRgbTab`, `0x0048ae20` `SetCfg`).
-  - Strict 520-byte Report ID 6 Feature Reports (`HIDIOCSFEATURE`/`HIDIOCGFEATURE`) with the required `0x5A 0xA5` magic payload trailer.
-  - Resolved `No such device` (`ENODEV`, error 19) and stale device node caching with dynamic re-probing and strict non-swallowing error propagation.
-  - Full hardware verification on real hardware (`258A:010C` Wired & `3554:FA09` Wireless): lighting effects, static color, per-key RGB canvas, audio-reactive visualizer streaming, and sleep timer.
-- 🎨 **Native Linux GUI Application (`ak820-gui`)**:
-  - Built with modern, hardware-accelerated **egui / eframe** running smoothly on both **Wayland** and **X11**.
-  - **Interactive 75% (82-Key) Visual Canvas**: Proportional, physical layout matching the keyboard, with live color previews, per-key custom painting, click selection, drag marquee box, and quick presets (`WASD`, `Arrows`, `Function Row`, `Numbers`, `Alphas`, `Modifiers`, `All Keys`).
-  - **Live Audio Visualizer Studio**: Real-time 10-band FFT spectrum analyzer (40 Hz – 16 kHz) with auto-gain control (AGC), pink noise tilt compensation, and peak decay animation.
-  - **Lighting Effects Studio**: Browser for all 20 built-in hardware animations, brightness and speed sliders, direction toggle, HSV/Hex color picker, and 16 curated neon swatches.
-  - **Hardware & Battery Header**: Live battery percentage, charging indicator, connection status (2.4G Wireless vs. Wired), active protocol, and interactive wireless sleep timer (5m, 15m, 30m, Never).
-- 🖼️ **Desktop Environment Integration**:
-  - Original 512x512 vector icon (`assets/icons/ajazz-ak820-max.svg`) and multi-resolution PNG icons (48x48 up to 512x512).
-  - Freedesktop `.desktop` application menu entry with desktop actions for immediate access to Effects and Music modes.
-- 📦 **First-Class Native Distro Packaging & Updaters**:
-  - **NixOS Flake & Module**: One-command `nix run .#gui` launch, automated runtime library wrapping (`wayland`, `libxkbcommon`, `libGL`, `libX11`, `alsa-lib`), and seamless upgrades via `nix flake update && sudo nixos-rebuild switch`.
-  - **Arch Linux (`PKGBUILD`)**: Clean standard package for `makepkg -si`.
-  - **Debian / Ubuntu**: Debian package configuration and udev reload postinst hooks.
-  - **Fedora / RHEL / openSUSE (`.spec`)**: RPM spec file for native RPM generation.
-  - **Universal Makefile & Updater**: `make install`, `make update`, and `make uninstall` scripts for any Linux distribution.
-
----
-
-## Features
-
-- **Hardware Reverse-Engineered Support**:
-  - **BY-COMBO / SinoWealth Revision** (`258A:010C` Wired & `3554:FA09` 2.4GHz Wireless): Uses 20-byte framed reports, modulo-256 checksums, and HID feature reports.
-  - **Shinetek / EVision Revision** (`1A2C:A036` Wired & `1A2C:8FFF` 2.4GHz Wireless): Uses 64-byte `AA 55 CC 33` framed reports.
-  - Automatic detection and seamless multi-interface protocol switching.
-- **Real-Time Music Synchronization**:
-  - Live audio capture via **CPAL** (PipeWire, PulseAudio, and ALSA).
-  - High-resolution real-time FFT spectrum analysis with pink-noise tilt and auto-gain control (AGC).
-  - **10 Frequency Equalizer Columns**: Physical mapping from the vendor's layout (`audiobar.txt`) across the 82 physical keys.
-  - 5 Reactive styles: `spectrum` (rising bars), `pulse` (bass beat), `wave` (expanding ripples), `soft-dance` (flowing gradient), and `passion` (rock transients).
-- **Comprehensive RGB Control**:
-  - 20+ hardware effects: Static, Breathing, Rainbow Wave, Starry, Ripple, Ejection, Kaleidoscope, Raindrops, Reactive Typing, Windmill, etc.
-  - Arbitrary per-key RGB coloring (WASD, arrows, custom key matrices).
-  - Full control over brightness (1–5), speed (1–5), and direction.
-- **Client/Daemon Architecture**:
-  - `ak820-gui`: Responsive native Linux GUI studio.
-  - `ak820d`: Background user daemon managing auto-reconnect, hotplugging, and background audio visualization.
-  - `ak820ctl`: Fast CLI utility with colorful terminal output, status queries, and interactive music mode.
+This software serves as a native replacement for the vendor's Windows-only configuration utility (`DeviceDriver.exe` / `OemDrv.exe`). It supports both the BY-COMBO / SinoWealth and Shinetek / EVision hardware revisions in wired and 2.4 GHz wireless modes.
 
 ---
 
 ## Supported Hardware
 
-| Revision | Mode | USB VID:PID | Device String | Protocol Variant |
+| Controller Revision | Connection Mode | USB VID:PID | Device Identification | Transport Protocol |
 |---|---|---|---|---|
-| **BY-COMBO** | Wired USB | `258A:010C` | "BY Tech Gaming Keyboard" | `ByComboWired` (Feature Reports) |
-| **BY-COMBO** | 2.4GHz Wireless | `3554:FA09` | "Compx 2.4G Wireless Receiver" | `ByComboWireless` (20-byte framing) |
-| **Shinetek** | Wired USB | `1A2C:A036` | "Shinetek Technology AK820" | `ShinetekEvision` (64-byte framing) |
-| **Shinetek** | 2.4GHz Wireless | `1A2C:8FFF` | "2.4 Wireless Device" | `ShinetekEvision` (64-byte framing) |
+| BY-COMBO / SinoWealth | USB Wired | `258a:010c` | "BY Tech Gaming Keyboard" | 520-byte Feature Reports (Report ID 6) |
+| BY-COMBO / SinoWealth | 2.4 GHz Wireless | `3554:fa09` | "Compx 2.4G Wireless Receiver" | 20-byte framed reports with mod-256 checksum |
+| Shinetek / EVision | USB Wired | `1a2c:a036` | "Shinetek Technology AK820" | 64-byte framed reports (`AA 55 CC 33` magic) |
+| Shinetek / EVision | 2.4 GHz Wireless | `1a2c:8fff` | "2.4 Wireless Device" | 64-byte framed reports (`AA 55 CC 33` magic) |
 
 ---
 
-## Installation & Quick Start
+## Architecture
 
-### 1. Launch Instantly with Nix Flakes
+The project is structured as a modular Rust workspace:
 
-No pre-installation required:
+- **`hid` (`ajazz-hid`)**: Hardware abstraction layer interacting directly with Linux `/dev/hidraw` nodes via `hidapi` and `rusb`. Implements automatic protocol negotiation, device probing, multi-interface filtering, and 1:1 vendor binary packet serialization.
+- **`rgb` (`ajazz-rgb`)**: Lighting subsystem implementing the 20 built-in hardware animations, custom 82-key matrix coordinate mapping, spatial gradient rendering, and real-time typing-reactive effect generators.
+- **`audio` (`ajazz-audio`)**: Audio capture and signal processing pipeline using `cpal` to capture system desktop audio output (PipeWire or PulseAudio monitor loopbacks). Implements a real-time FFT spectrum analyzer with pink-noise tilt compensation and automatic gain control (AGC), mapped to physical keyboard column frequencies.
+- **`daemon` (`ak820d`)**: Background user service that monitors device hotplugging, manages sleep timers, captures non-blocking keyboard input events via `evdev` for typing-reactive animations, and exposes a Unix domain socket (`$XDG_RUNTIME_DIR/ajazz-ak820.sock`) for client IPC.
+- **`cli` (`ak820ctl`)**: Terminal utility providing hardware status queries, lighting configuration, solid color assignment, sleep management, and terminal-based music visualization. Communicates with `ak820d` via IPC when running, with automatic fallback to direct HID access.
+- **`gui` (`ak820-gui`)**: Hardware-accelerated graphical interface built with `egui` and `eframe`. Supports native Wayland and X11 display servers, providing an interactive 75% canvas editor, lighting browser, audio visualizer controls, and battery telemetry.
 
-```bash
-# Launch the Native GUI Studio
-nix run .#gui
+---
 
-# Or query keyboard battery & status via CLI
-nix run .#ak820ctl -- status
+## Prerequisites
 
-# Start CLI music visualizer directly
-nix run .#ak820ctl -- music --style spectrum
+### Kernel and Permissions
+
+The driver operates entirely in userspace and requires:
+- Linux kernel compiled with `CONFIG_HIDRAW=y` and `CONFIG_INPUT_EVDEV=y`.
+- Udev rules granting unprivileged read/write access to the keyboard's `/dev/hidraw*` devices.
+
+A pre-configured udev rule file is provided at `nix/70-ajazz-ak820.rules` and installed by the setup scripts:
+
+```udev
+# BY-COMBO / SinoWealth Wired Mode (258a:010c)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="258a", ATTRS{idProduct}=="010c", MODE="0666", GROUP="input", TAG+="uaccess"
+
+# Compx 2.4GHz Wireless USB Receiver (3554:fa09)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3554", ATTRS{idProduct}=="fa09", MODE="0666", GROUP="input", TAG+="uaccess"
+
+# Shinetek / EVision Wired Mode (1a2c:a036)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1a2c", ATTRS{idProduct}=="a036", MODE="0666", GROUP="input", TAG+="uaccess"
+
+# Shinetek 2.4GHz Wireless USB Receiver (1a2c:8fff)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1a2c", ATTRS{idProduct}=="8fff", MODE="0666", GROUP="input", TAG+="uaccess"
 ```
 
-### 2. NixOS Configuration Module
+Desktop users must be members of the `input` group to access evdev devices for typing-reactive lighting.
 
-Add `ajazz-ak820-max` to your system configuration:
+### Build Dependencies
+
+Building from source requires the Rust toolchain (2021 edition) and standard system development headers:
+- `pkg-config`
+- `systemd` / `udev` (`libudev`)
+- `alsa-lib` and `libpulseaudio`
+- Graphical libraries: `wayland`, `libxkbcommon`, `libGL`, `vulkan-loader`, `libX11`, `libXcursor`, `libXrandr`, `libXi`
+
+On Debian/Ubuntu-derived systems:
+```bash
+sudo apt-get install pkg-config libudev-dev libasound2-dev libpulse-dev \
+    libwayland-dev libxkbcommon-dev libgl1-mesa-dev libvulkan-dev \
+    libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+```
+
+On Arch Linux:
+```bash
+sudo pacman -S base-devel pkgconf systemd alsa-lib libpulse \
+    wayland libxkbcommon mesa vulkan-icd-loader libx11 libxcursor libxrandr libxi
+```
+
+On Fedora:
+```bash
+sudo dnf install pkgconf-pkg-config systemd-devel alsa-lib-devel pulseaudio-libs-devel \
+    wayland-devel libxkbcommon-devel mesa-libGL-devel vulkan-loader-devel \
+    libX11-devel libXcursor-devel libXrandr-devel libXi-devel
+```
+
+---
+
+## Installation & Setup
+
+### NixOS (Flake Module)
+
+1. Add the repository to your system flake inputs in `/etc/nixos/flake.nix`:
 
 ```nix
 {
   inputs = {
-    ajazz-ak820-max.url = "github:AayamPokhrel/AJAZZ_AK820MAX_LINUX_DRIVER";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    ajazz-ak820-max = {
+      url = "github:AayamPokhrel/AJAZZ_AK820MAX_LINUX_DRIVER";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, ajazz-ak820-max, ... }: {
-    nixosConfigurations.myhostname = nixpkgs.lib.nixosSystem {
+  outputs = { self, nixpkgs, ajazz-ak820-max, ... }@inputs: {
+    nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      specialArgs = { inherit inputs; };
       modules = [
         ajazz-ak820-max.nixosModules.default
-        {
-          # Enable hardware driver, udev rules, desktop app, and icons
-          hardware.ajazz-ak820-max.enable = true;
-          
-          # Optional: automatically run daemon as a user systemd service
-          hardware.ajazz-ak820-max.daemon.enable = true;
-        }
+        ./configuration.nix
       ];
     };
   };
 }
 ```
 
-To update to future releases on NixOS:
-```bash
-nix flake update ajazz-ak820-max
-sudo nixos-rebuild switch
+2. Enable the hardware module and background daemon in `/etc/nixos/configuration.nix`:
+
+```nix
+{
+  # Add user to input group for reactive typing capture
+  users.users."yourusername".extraGroups = [ "input" ];
+
+  # Enable the Ajazz driver, udev rules, desktop entries, and daemon
+  hardware.ajazz-ak820-max.enable = true;
+  hardware.ajazz-ak820-max.daemon.enable = true;
+}
 ```
 
----
+3. Rebuild and switch:
 
-### 3. Native Linux Installation (Debian, Ubuntu, Arch, Fedora, etc.)
+```bash
+sudo nixos-rebuild switch --flake /etc/nixos#nixos
+```
 
-#### Universal Installer / Makefile:
+To run individual binaries directly using Nix Flakes without installing system-wide:
+
+```bash
+# Launch GUI Studio
+nix run github:AayamPokhrel/AJAZZ_AK820MAX_LINUX_DRIVER#gui
+
+# Check hardware status
+nix run github:AayamPokhrel/AJAZZ_AK820MAX_LINUX_DRIVER#ak820ctl -- status
+```
+
+### Generic Linux (Makefile)
+
+1. Clone the repository:
 
 ```bash
 git clone https://github.com/AayamPokhrel/AJAZZ_AK820MAX_LINUX_DRIVER.git
 cd AJAZZ_AK820MAX_LINUX_DRIVER
+```
 
-# Build and install binaries, udev rules, systemd service, desktop entry & icons
+2. Build release binaries:
+
+```bash
+make build
+```
+
+3. Install binaries, udev rules, desktop entries, icons, and systemd user services:
+
+```bash
 sudo make install
-
-# To update to latest upstream changes anytime:
-sudo make update
-
-# To uninstall cleanly:
-sudo make uninstall
 ```
 
-#### Arch Linux (PKGBUILD):
+4. Reload udev rules and enable the background daemon for your user account:
 
 ```bash
-cd packaging/arch
-makepkg -si
-```
-
-#### Fedora / RHEL / openSUSE (RPM):
-
-```bash
-rpmbuild -ba packaging/rpm/ajazz-ak820-max.spec
-```
-
----
-
-## GUI Studio Overview (`ak820-gui`)
-
-The graphical interface is divided into 4 primary workspaces:
-
-1. **✨ Lighting Effects Studio**:
-   - Live virtual keyboard visualization reflecting active lighting animation.
-   - Quick selection grid for all 20 hardware animations.
-   - Sliders for brightness (1–5) and speed (1–5), plus left/right direction toggle.
-   - Rainbow mode vs. custom color tint with 16 quick curated swatches and hex input.
-2. **🎵 Audio-Reactive Visualizer**:
-   - Real-time 10-band hardware FFT spectrum analyzer (40 Hz to 16 kHz).
-   - Peak decay meter and animated decibel bars matching the physical key columns.
-   - Instant style switcher (`spectrum`, `pulse`, `wave`, `soft-dance`, `passion`).
-   - Sensitivity gain slider and target FPS selector (30, 60, 90 Hz).
-3. **🎹 75% Visual Canvas & Custom Paint**:
-   - Interactive, proportional 82-key layout canvas.
-   - Click to toggle selection, or drag a marquee box across keys.
-   - Preset buttons: `WASD`, `Arrows`, `Fn Row`, `Numbers`, `Alphas`, `Modifiers`, `All Keys`.
-   - Paint selected keys with any color swatch and flash to keyboard memory.
-4. **⚙️ Device & Power Settings**:
-   - Live hardware status: Battery percentage gauge, charging/discharging state.
-   - Connection mode: 2.4GHz Wireless vs. Wired USB.
-   - Controller protocol identification and active devnode (`/dev/hidraw*`).
-   - Interactive wireless sleep timeout control (5m, 15m, 30m, Never).
-
----
-
-## CLI Usage Reference (`ak820ctl`)
-
-```bash
-# Query battery and connection status
-ak820ctl status
-
-# List all detected Ajazz keyboards and USB interfaces
-ak820ctl devices
-
-# Set built-in lighting effects
-ak820ctl effect --mode breathing --brightness 5 --speed 4
-ak820ctl effect --mode sine-wave --direction left
-ak820ctl effect --mode spectrum
-
-# Set static solid color
-ak820ctl static --color "#00F2FE"
-
-# Launch real-time music reactive lighting
-ak820ctl music --style spectrum --sensitivity 1.5 --fps 60
-ak820ctl music --style pulse --color "#FF007F"
-
-# Set individual key color
-ak820ctl key --name wasd --color "#00FF88"
-
-# Set auto-sleep timer (in minutes, 0 = never)
-ak820ctl sleep --minutes 15
-```
-
----
-
-## Running the Background Daemon (`ak820d`)
-
-The background daemon enables hotplug recovery and keeps music visualization running smoothly:
-
-```bash
-# Start manually
-ak820d
-
-# Or enable as a systemd user service
+sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=hidraw
+systemctl --user daemon-reload
 systemctl --user enable --now ak820d.service
 ```
 
+To uninstall cleanly:
+
+```bash
+sudo make uninstall
+```
+
+### Distribution Packages
+
+- **Arch Linux**: A `PKGBUILD` is provided in `packaging/arch/`. Run `makepkg -si` from that directory.
+- **RPM (Fedora / RHEL / openSUSE)**: A spec file is provided in `packaging/rpm/ajazz-ak820-max.spec`.
+
 ---
 
-## Testing & Quality Assurance
+## Usage
 
-Run the comprehensive unit and integration test suite:
+### Command-Line Interface (`ak820ctl`)
+
+`ak820ctl` interacts with the running background daemon over Unix domain socket IPC, or opens the `/dev/hidraw*` endpoint directly if the daemon is stopped.
+
+#### Status and Device Enumeration
+
+```bash
+# Query battery level, charging status, and connection mode
+ak820ctl status
+
+# List detected Ajazz USB devices, dongles, and hidraw paths
+ak820ctl devices
+```
+
+#### Lighting Effects
+
+```bash
+# Set a hardware animation with speed (1-5) and brightness (1-5)
+ak820ctl effect --mode breathing --brightness 5 --speed 3
+ak820ctl effect --mode sine-wave --direction left
+ak820ctl effect --mode spectrum
+
+# Set a static RGB color across the keyboard
+ak820ctl static --color "#00F2FE"
+
+# Color specific key groups (e.g. wasd, arrows, numbers)
+ak820ctl key --name wasd --color "#00FF88"
+```
+
+Supported hardware effect modes include: `static`, `breathing`, `spectrum`, `starry`, `ripple-lr`, `ripple-ud`, `flash-away`, `kaleidoscope`, `cross`, `reactive-single`, `picture-scroll`, `waterfall`, `raindrops`, `windmill`, `sine-wave`, `storm`, and interactive typing modes (`gradient-splash`, `neon-shockwave`, `matrix-rain`, `thermal-fire`).
+
+#### Audio-Reactive Music Visualizer
+
+```bash
+# Start terminal-driven music visualizer with PipeWire/PulseAudio loopback
+ak820ctl music --style spectrum --sensitivity 1.5 --fps 60
+
+# Bass beat pulse mode with custom neon tint
+ak820ctl music --style pulse --color "#FF007F"
+```
+
+#### Power Management
+
+```bash
+# Set wireless auto-sleep timeout in minutes (0 = never sleep)
+ak820ctl sleep --minutes 15
+```
+
+### Graphical Interface (`ak820-gui`)
+
+Launch `ak820-gui` from your application menu or terminal. The interface is organized into four main tabs:
+
+1. **Lighting Effects Studio**: Select from all 20 hardware lighting animations, adjust brightness and playback speed sliders, toggle direction, and pick custom colors via HSV palette or hex code.
+2. **Audio-Reactive Visualizer**: Configure real-time music synchronization with 10-band spectrum visualization, sensitivity controls, FPS targets, and reactive styles (`spectrum`, `pulse`, `wave`, `soft-dance`, `passion`).
+3. **75% Visual Canvas**: An interactive 82-key graphical representation of the keyboard layout. Supports clicking individual keys, dragging marquee selection boxes, applying quick presets (`WASD`, `Arrows`, `Function Row`, `Modifiers`), and saving custom per-key layouts to hardware memory.
+4. **Device & Power Settings**: Real-time display of battery percentage, charging state, active transport protocol, devnode assignment, and wireless sleep configuration.
+
+### Background Daemon (`ak820d`)
+
+The daemon manages hardware state, persistent configurations, audio synchronization, and input event capture without requiring root privileges.
+
+```bash
+# Check daemon service status
+systemctl --user status ak820d.service
+
+# View daemon logs
+journalctl --user -u ak820d.service -f
+
+# Restart daemon
+systemctl --user restart ak820d.service
+```
+
+---
+
+## Testing
+
+Run the automated test suite across all workspace crates:
 
 ```bash
 cargo test --workspace
 ```
 
-Tests include:
-- Protocol framing and checksum verification for BY-COMBO and Shinetek revisions.
-- Physical key layout geometry and 108 LED index bounds verification.
-- Audio RealFFT spectrum analyzer logarithmic band segmentation and AGC validation.
+The test suite validates:
+- Modulo-256 and XOR checksum generation across both protocol families.
+- 520-byte and 64-byte packet serialization and deserialization.
+- Physical layout coordinate bounds and 108 LED index constraints.
+- RealFFT logarithmic bin division, auto-gain normalization, and DSP decay curves.
 
 ---
 
-## License & Credits
+## Credits & Acknowledgments
 
-- **License**: Dual-licensed under [MIT](LICENSE) or [Apache 2.0](LICENSE-APACHE).
-- **Author**: Aayam Pokhrel (<pokhrelaayam1010@gmail.com>).
-- **Reverse Engineering**: Built using cleanroom protocol analysis and reverse engineering of USB/HID traffic and the vendor Windows utility.
+- **REA (Reverse Engineering Anything)**: Specifically acknowledged for protocol reconstruction, disassembly analysis, and structure recovery from the proprietary Windows binaries (`DeviceDriver.exe`, `OemDrv.exe`, and `CDevG5KB.dll`).
+- **egui & eframe** by Emil Ernerfeldt: Immediate-mode graphical user interface library for Rust, powering `ak820-gui`.
+- **CPAL (Cross-Platform Audio Library)**: Audio I/O capture infrastructure for PipeWire, PulseAudio, and ALSA loopbacks.
+- **realfft**: High-performance real-to-complex Fast Fourier Transform implementation used in the audio visualizer pipeline.
+- **hidapi / hidapi-rs**: Userspace HID transport library interface.
+- **tokio**: Asynchronous runtime driving daemon IPC, event loops, and non-blocking I/O.
+- **clap**: Declarative command-line argument parser for `ak820ctl`.
+- **evdev**: Linux event device bindings utilized for zero-latency interactive typing animations.
+- **Nix & NixOS Community**: Packaging infrastructure, systemd module conventions, and reproducible environment tooling.
+
+---
+
+## AI Disclosure
+
+Portions of this project were developed with the assistance of agentic AI coding tools (Antigravity). AI assistance was utilized for exploratory protocol translation, scaffolding initial crate layouts, DSP mathematical algorithms, and Nix packaging configurations. All protocols, hardware communications, and functionality were reverse-engineered, reviewed, and validated against physical Ajazz AK820 Max hardware.
